@@ -47,9 +47,6 @@ CALLBACK_TEAM_PREFIX = "t:"
 CALLBACK_EXERCISE_PREFIX = "e:"
 CALLBACK_CITY_PREFIX = "city:"
 
-KEY_CITY_TEAMS_CACHE = "city_teams_cache"  # {city: [teams]}
-KEY_CITY_EXERCISES_CACHE = "city_exercises_cache"
-
 MESSAGE_START_WITH_CITY = (
     "Привет! Я помогу отметить выполненное упражнение для команды в таблице.\n\n"
     "Для начала выберите ваш город:"
@@ -131,10 +128,7 @@ async def post_init(application: Application) -> None:
     application.bot_data["spreadsheet_id"] = spreadsheet_id
     application.bot_data["exercise_filter"] = _get_exercise_filter()
     application.bot_data["cities"] = _get_cities_from_env()
-
-    application.bot_data["city_teams_cache"] = {}
-    application.bot_data["city_exercises_cache"] = {}
-    logger.info("SheetsManager + caches initialized.")
+    logger.info("SheetsManager initialized.")
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start: ALWAYS show city selection first + reset city."""
@@ -177,71 +171,25 @@ async def callback_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode="Markdown",
     )
 
-
-async def _get_cached_teams(context: ContextTypes.DEFAULT_TYPE, city: str) -> list[str]:
-    """Get teams from cached ones"""
-    cache = context.application.bot_data.get(KEY_CITY_TEAMS_CACHE, {})
-    if city in cache:
-        logger.info(f"Using cached teams for {city}")
-        return cache[city]
-
-    manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
-
-    try:
-        teams = await manager.get_teams(spreadsheet_id, city=city)
-        cache[city] = teams
-        context.application.bot_data[KEY_CITY_TEAMS_CACHE] = cache
-        logger.info(f"Cached {len(teams)} teams for {city}")
-        return teams
-    except Exception as e:
-        logger.exception(f"Failed to cache teams for {city}")
-        return []
-
-
-async def _get_cached_exercises(context: ContextTypes.DEFAULT_TYPE, city: str) -> list[str]:
-    """Gets exercise from cached ones"""
-    cache = context.application.bot_data.get(KEY_CITY_EXERCISES_CACHE, {})
-    if city in cache:
-        logger.info(f"Using cached exercises for {city}")
-        return cache[city]
-
-    manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
-    max_count, exclude_filter = context.application.bot_data.get("exercise_filter", (None, None))
-
-    try:
-        exercises = await manager.get_exercises(
-            spreadsheet_id, max_count=max_count, excluded_names=exclude_filter, city=city
-        )
-        cache[city] = exercises
-        context.application.bot_data[KEY_CITY_EXERCISES_CACHE] = cache
-        logger.info(f"Cached {len(exercises)} exercises for {city}")
-        return exercises
-    except Exception as e:
-        logger.exception(f"Failed to cache exercises for {city}")
-        return []
-
-
-
 async def _start_team_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, action_type: str) -> None:
-    """Load teams from selected city."""
+    """Load teams and show team buttons. action_type is ACTION_CHECK or ACTION_UNCHECK."""
     context.user_data[KEY_ACTION_TYPE] = action_type
     manager = get_manager(context)
     spreadsheet_id = get_spreadsheet_id(context)
 
     city = context.user_data.get(KEY_CITY)
-    if not city:
-        await update.callback_query.edit_message_text(MESSAGE_NO_CITY)
-        return
 
-    teams = await _get_cached_teams(context, city)
+    try:
+        teams = await manager.get_teams(spreadsheet_id, city=city)
+    except (GoogleSheetsAPIError, AuthenticationError) as e:
+        logger.exception("Failed to get teams")
+        msg = MESSAGE_ERROR_AUTH if isinstance(e, AuthenticationError) else MESSAGE_ERROR_SHEETS
+        await update.callback_query.edit_message_text(msg)
+        return
 
     if not teams:
         await update.callback_query.edit_message_text("В таблице нет команд.")
         return
-
-
 
     context.user_data[KEY_TEAMS] = teams
     keyboard = [
@@ -265,14 +213,14 @@ async def callback_action_uncheck(update: Update, context: ContextTypes.DEFAULT_
     await _start_team_flow(update, context, ACTION_UNCHECK)
 
 async def callback_team(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """User selected team: load exercises from city."""
+    """User selected team: save it, load exercises, show inline exercise buttons."""
     await update.callback_query.answer()
     data = update.callback_query.data
     if not data.startswith(CALLBACK_TEAM_PREFIX):
         return
 
     try:
-        index = int(data[len(CALLBACK_TEAM_PREFIX):], 10)
+        index = int(data[len(CALLBACK_TEAM_PREFIX) :], 10)
     except ValueError:
         return
 
@@ -286,15 +234,20 @@ async def callback_team(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     manager = get_manager(context)
     spreadsheet_id = get_spreadsheet_id(context)
-    city = context.user_data.get(KEY_CITY)
-
-    if not city:
-        await update.callback_query.edit_message_text(MESSAGE_NO_CITY)
-        return
 
     max_count, exclude_filter = context.application.bot_data.get("exercise_filter", (None, None))
-
-    exercises = await _get_cached_exercises(context, city)
+    try:
+        exercises = await manager.get_exercises(
+            spreadsheet_id,
+            max_count=max_count,
+            excluded_names=exclude_filter,
+        )
+    except (GoogleSheetsAPIError, AuthenticationError) as e:
+        logger.exception("Failed to get exercises")
+        msg = MESSAGE_ERROR_AUTH if isinstance(e, AuthenticationError) else MESSAGE_ERROR_SHEETS
+        await update.callback_query.edit_message_text(msg)
+        context.user_data.pop(KEY_SELECTED_TEAM, None)
+        return
 
     if not exercises:
         await update.callback_query.edit_message_text("В таблице нет упражнений.")
@@ -393,27 +346,20 @@ async def _get_current_step_prompt(context: ContextTypes.DEFAULT_TYPE):
     if not action:
         return MESSAGE_ACTIONS, _action_keyboard()
 
-    teams = await _get_cached_teams(context, city)
-    if teams and not context.user_data.get(KEY_TEAMS):
-        context.user_data[KEY_TEAMS] = teams
+    teams = context.user_data.get(KEY_TEAMS)
+    exercises = context.user_data.get(KEY_EXERCISES)
 
-    exercises = await _get_cached_exercises(context, city) if context.user_data.get(KEY_SELECTED_TEAM) else []
-    if exercises and not context.user_data.get(KEY_EXERCISES):
-        context.user_data[KEY_EXERCISES] = exercises
-
-    teams_in_userdata = context.user_data.get(KEY_TEAMS)
-    if teams_in_userdata and not context.user_data.get(KEY_EXERCISES):
+    if teams and not exercises:
         keyboard = [[InlineKeyboardButton(team, callback_data=f"{CALLBACK_TEAM_PREFIX}{i}")]
-                    for i, team in enumerate(teams_in_userdata)]
+                    for i, team in enumerate(teams)]
         return MESSAGE_SELECT_TEAM, InlineKeyboardMarkup(keyboard)
 
-    exercises_in_userdata = context.user_data.get(KEY_EXERCISES)
-    if exercises_in_userdata:
+    if exercises:
         keyboard = [[InlineKeyboardButton(ex, callback_data=f"{CALLBACK_EXERCISE_PREFIX}{i}")]
-                    for i, ex in enumerate(exercises_in_userdata)]
+                    for i, ex in enumerate(exercises)]
         return MESSAGE_SELECT_EXERCISE, InlineKeyboardMarkup(keyboard)
 
-    return MESSAGE_ACTIONS, _action_keyboard()
+    return f"**Город: {city}**\n\n{MESSAGE_ACTIONS}", _action_keyboard()
 
 async def fallback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
