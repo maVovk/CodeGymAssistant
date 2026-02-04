@@ -118,7 +118,8 @@ class SheetsManager:
     
     async def _load_structure(
         self,
-        spreadsheet_id: str
+        spreadsheet_id: str,
+        city: Optional[str] = None
     ) -> Tuple[List[str], List[str]]:
         """
         Load spreadsheet structure (teams and exercises) from API.
@@ -137,7 +138,11 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            worksheet = await spreadsheet.get_worksheet(0)  # First sheet
+
+            if city is not None:
+                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
+            else:
+                worksheet = await spreadsheet.get_worksheet(0) # First sheet
             
             # Batch read: Get teams from column A (starting row 2) and exercises from row 1 (starting column B)
             # We'll read a reasonable range - A2:A100 for teams, B1:ZZ1 for exercises
@@ -232,7 +237,8 @@ class SheetsManager:
         self,
         spreadsheet_id: str,
         row: int,
-        col: int
+        col: int,
+        city: Optional[str] = None
     ) -> Any:
         """
         Get current value from a cell.
@@ -253,7 +259,10 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            worksheet = await spreadsheet.get_worksheet(0)
+            if city is not None:
+                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
+            else:
+                worksheet = await spreadsheet.get_worksheet(0)
             
             cell = await worksheet.acell(cell_notation)
             return cell.value
@@ -263,56 +272,61 @@ class SheetsManager:
                 f"Failed to read cell {cell_notation}: {str(e)}",
                 original_error=e
             )
-    
+
     async def _update_cell_value(
         self,
         spreadsheet_id: str,
         row: int,
         col: int,
-        value: Any
+        value: Any,
+        city: Optional[str] = None
     ) -> Any:
         """
         Update a cell and return its previous value.
-        
+
         Args:
             spreadsheet_id: The ID of the spreadsheet
             row: Row number (1-based)
             col: Column number (1-based)
             value: New value to set
-            
+
         Returns:
             Previous value of the cell
-            
+
         Raises:
             GoogleSheetsAPIError: If API call fails
         """
         cell_notation = build_cell_notation(row, col)
-        
+
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            worksheet = await spreadsheet.get_worksheet(0)
-            
+            if city is not None:
+                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
+            else:
+                worksheet = await spreadsheet.get_worksheet(0)
+
             # Get current value first
             cell = await worksheet.acell(cell_notation)
             previous_value = cell.value
-            
+
             # Update with new value
             await worksheet.update_acell(cell_notation, value)
-            
+
             return previous_value
-            
+
         except Exception as e:
             raise GoogleSheetsAPIError(
                 f"Failed to update cell {cell_notation}: {str(e)}",
                 original_error=e
             )
-    
+
     async def check_team_exercise(
         self,
         spreadsheet_id: str,
         team_name: str,
-        exercise_name: str
+        exercise_name: str,
+        city: Optional[str] = None
     ) -> Any:
         """
         Check (mark as completed) a team's exercise by setting checkbox to TRUE.
@@ -355,13 +369,13 @@ class SheetsManager:
         validate_exercise_name(exercise_name)
         
         self._ensure_initialized()
-        
+        cache_key = f"{spreadsheet_id}:{city or 'default'}"
         # Get structure from cache or load from API (only team/exercise names)
         async def fetch_structure():
-            return await self._load_structure(spreadsheet_id)
+            return await self._load_structure(spreadsheet_id, city=city)
         
         team_names, exercise_names = await self.cache.get_or_fetch(
-            spreadsheet_id,
+            cache_key,
             fetch_structure
         )
         
@@ -370,14 +384,15 @@ class SheetsManager:
         col = await self._find_exercise_col(exercise_names, exercise_name, spreadsheet_id)
         
         # Update the cell and return previous value
-        previous_value = await self._update_cell_value(spreadsheet_id, row, col, True)
+        previous_value = await self._update_cell_value(spreadsheet_id, row, col, True, city=city)
         return previous_value
     
     async def uncheck_team_exercise(
         self,
         spreadsheet_id: str,
         team_name: str,
-        exercise_name: str
+        exercise_name: str,
+        city: Optional[str] = None
     ) -> Any:
         """
         Uncheck (mark as incomplete) a team's exercise by setting checkbox to FALSE.
@@ -422,13 +437,13 @@ class SheetsManager:
         validate_exercise_name(exercise_name)
         
         self._ensure_initialized()
-        
+        cache_key = f"{spreadsheet_id}:{city or 'default'}"
         # Get structure from cache or load from API (only team/exercise names)
         async def fetch_structure():
-            return await self._load_structure(spreadsheet_id)
+            return await self._load_structure(spreadsheet_id, city=city)
         
         team_names, exercise_names = await self.cache.get_or_fetch(
-            spreadsheet_id,
+            cache_key,
             fetch_structure
         )
         
@@ -437,14 +452,15 @@ class SheetsManager:
         col = await self._find_exercise_col(exercise_names, exercise_name, spreadsheet_id)
         
         # Update the cell to FALSE and return previous value
-        previous_value = await self._update_cell_value(spreadsheet_id, row, col, False)
+        previous_value = await self._update_cell_value(spreadsheet_id, row, col, False, city=city)
         return previous_value
     
     async def get_team_exercise_status(
         self,
         spreadsheet_id: str,
         team_name: str,
-        exercise_name: str
+        exercise_name: str,
+        city: Optional[str] = None
     ) -> Any:
         """
         Get current status of a team's exercise without modifying it.
@@ -478,13 +494,14 @@ class SheetsManager:
         validate_exercise_name(exercise_name)
         
         self._ensure_initialized()
-        
+
+        cache_key = f"{spreadsheet_id}:{city or 'default'}"
         # Get structure from cache or load from API
         async def fetch_structure():
-            return await self._load_structure(spreadsheet_id)
+            return await self._load_structure(spreadsheet_id, city=city)
         
         team_names, exercise_names = await self.cache.get_or_fetch(
-            spreadsheet_id,
+            cache_key,
             fetch_structure
         )
         
@@ -493,9 +510,9 @@ class SheetsManager:
         col = await self._find_exercise_col(exercise_names, exercise_name, spreadsheet_id)
         
         # Get cell value
-        return await self._get_cell_value(spreadsheet_id, row, col)
+        return await self._get_cell_value(spreadsheet_id, row, col, city=city)
     
-    async def get_teams(self, spreadsheet_id: str) -> List[str]:
+    async def get_teams(self, spreadsheet_id: str, city: Optional[str] = None) -> List[str]:
         """
         Get list of all team names from the spreadsheet.
         
@@ -522,13 +539,14 @@ class SheetsManager:
         # Validate input
         validate_spreadsheet_id(spreadsheet_id)
         self._ensure_initialized()
-        
+
+        cache_key = f"{spreadsheet_id}:{city or 'default'}"
         # Get structure from cache or load from API
         async def fetch_structure():
-            return await self._load_structure(spreadsheet_id)
+            return await self._load_structure(spreadsheet_id, city=city)
         
         team_names, _ = await self.cache.get_or_fetch(
-            spreadsheet_id,
+            cache_key,
             fetch_structure
         )
         
@@ -539,6 +557,7 @@ class SheetsManager:
         spreadsheet_id: str,
         max_count: Optional[int] = None,
         excluded_names: Optional[List[str]] = None,
+        city: Optional[str] = None
     ) -> List[str]:
         """
         Get list of exercise names from the spreadsheet.
@@ -570,13 +589,15 @@ class SheetsManager:
         # Validate input
         validate_spreadsheet_id(spreadsheet_id)
         self._ensure_initialized()
-        
+
+        cache_key = f"{spreadsheet_id}:{city or 'default'}"
+
         # Get structure from cache or load from API
         async def fetch_structure():
-            return await self._load_structure(spreadsheet_id)
+            return await self._load_structure(spreadsheet_id, city=city)
         
         _, exercise_names = await self.cache.get_or_fetch(
-            spreadsheet_id,
+            cache_key,
             fetch_structure
         )
         
@@ -609,3 +630,21 @@ class SheetsManager:
             Dictionary with cache statistics
         """
         return self.cache.get_cache_stats()
+
+    async def _get_worksheet_by_city(self, spreadsheet, city_name: str):
+        try:
+            worksheets = await spreadsheet.worksheets()
+            normalized_city = normalize_name(city_name)
+
+            for ws in worksheets:
+                if normalize_name(ws.title) == normalized_city:
+                    return ws
+            raise GoogleSheetsAPIError(
+                f"Worksheet (city) '{city_name}' not found."
+            )
+
+        except Exception as e:
+            raise GoogleSheetsAPIError(
+                f"Failed to find worksheet for city '{city_name}': {e}",
+                original_error=e
+            )
