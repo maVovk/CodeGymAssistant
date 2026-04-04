@@ -1,19 +1,21 @@
 """
 Telegram bot for marking team exercises in Google Sheets.
-Flow: /start -> choose city ONLY -> choose action -> choose exercise -> choose team.
+Flow: /start -> city -> action -> exercise -> team (stay on team list).
 """
 
 import logging
 import os
 from typing import Optional
-from telegram.ext import MessageHandler, filters
+
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from sheets_manager import (
@@ -32,12 +34,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# User data keys
+PARSE_MODE = "HTML"
+
 KEY_SELECTED_EXERCISE = "selected_exercise"
 KEY_EXERCISES = "exercises"
 KEY_TEAMS = "teams"
 KEY_ACTION_TYPE = "action_type"
 KEY_CITY = "city"
+KEY_LAST_RESULT = "last_result"
 
 ACTION_CHECK = "check"
 ACTION_UNCHECK = "uncheck"
@@ -49,79 +53,109 @@ CALLBACK_TEAM_PREFIX = "t:"
 CALLBACK_EXERCISE_PREFIX = "e:"
 CALLBACK_CITY_PREFIX = "city:"
 CALLBACK_NAV_BACK_TO_EXERCISES = "nav:back_exercises"
+CALLBACK_NAV_BACK_TO_ACTIONS = "nav:back_actions"
 CALLBACK_NAV_BACK_TO_CITIES = "nav:back_cities"
 
-MESSAGE_START_WITH_CITY = (
-    "Привет! Я помогу отметить выполненное упражнение для команды в таблице.\n\n"
-    "Для начала выберите ваш город:"
-)
-
-MESSAGE_ACTIONS = (
-    "Выберите действие:"
-)
-MESSAGE_SELECT_TEAM = "Выберите команду:"
-MESSAGE_SELECT_EXERCISE = "Выберите упражнение:"
-MESSAGE_DONE = "Готово! Упражнение отмечено."
-MESSAGE_UNCHECK_DONE = "Готово! Отметка снята."
-MESSAGE_ERROR_SHEETS = "Ошибка доступа к таблице. Попробуйте позже."
-MESSAGE_ERROR_AUTH = "Ошибка авторизации. Проверьте настройки бота."
-MESSAGE_ERROR_GENERIC = "Произошла ошибка. Попробуйте позже."
-MESSAGE_NO_CITY = "Сначала выберите город командой /start."
-
 CITIES_ENV = "CITIES"
+N_EXERCISES_ENV = "N_EXERCISES"
+EXERCISE_NAMES_ENV = "EXCLUDED_NAMES"
+DEFAULT_EXCLUDED_NAMES = ["Сдано задач", "Разница"]
 
-def _get_cities_from_env() -> list[str]:
-    """Get cities list from CITIES env variable."""
-    raw = os.getenv(CITIES_ENV, "")
-    return [s.strip() for s in raw.split(",") if s.strip()]
 
-def get_manager(context: ContextTypes.DEFAULT_TYPE) -> SheetsManager:
-    return context.application.bot_data["sheets_manager"]
+# ---------------------------------------------------------------------------
+#  HTML escape
+# ---------------------------------------------------------------------------
 
-def get_spreadsheet_id(context: ContextTypes.DEFAULT_TYPE) -> str:
-    return context.application.bot_data["spreadsheet_id"]
+def _esc(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def _action_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard with 'Отметить упражнение' and 'Снять отметку' buttons."""
-    keyboard = [
-        [
-            InlineKeyboardButton("Отметить упражнение", callback_data=CALLBACK_ACTION_CHECK),
-            InlineKeyboardButton("Снять отметку", callback_data=CALLBACK_ACTION_UNCHECK),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+
+# ---------------------------------------------------------------------------
+#  Message templates
+# ---------------------------------------------------------------------------
 
 def _action_label(action_type: str) -> str:
-    """Human-readable action label for headers."""
-    return "Отметить упражнение" if action_type != ACTION_UNCHECK else "Снять отметку"
-
-def _header_text(
-    *,
-    city: Optional[str],
-    action_type: Optional[str],
-    exercise_name: Optional[str] = None,
-) -> str:
-    """Build common markdown header for screens."""
-    if not city:
-        return ""
-    lines: list[str] = [f"**Город: {city}**"]
-    if action_type:
-        lines.append(f"**Режим: {_action_label(action_type)}**")
-    if exercise_name:
-        lines.append(f"**Упражнение: {exercise_name}**")
-    return "\n".join(lines) + "\n\n"
-
-def _toggle_action_button(action_type: str) -> InlineKeyboardButton:
     if action_type == ACTION_UNCHECK:
-        return InlineKeyboardButton("Переключить режим", callback_data=CALLBACK_ACTION_TOGGLE)
-    return InlineKeyboardButton("Переключить режим", callback_data=CALLBACK_ACTION_TOGGLE)
+        return "снять отметку"
+    return "отметить выполнение"
 
-def _chunk_keyboard_buttons(
+
+def msg_welcome() -> str:
+    return (
+        "<b>CodeGym Assistant</b>\n"
+        "\n"
+        "Бот для отметки выполненных\n"
+        "упражнений в таблице результатов.\n"
+        "\n"
+        "Выберите ваш город:"
+    )
+
+
+def msg_action_select(city: str) -> str:
+    return (
+        f"<b>Город:</b>  {_esc(city)}\n"
+        "\n"
+        "Что необходимо сделать?"
+    )
+
+
+def msg_exercise_select(city: str, action_type: str) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Город:</b>  {_esc(city)}\n"
+        f"<b>Действие:</b>  {_action_label(action_type)}"
+        "</blockquote>\n"
+        "\n"
+        "Выберите упражнение:"
+    )
+
+
+def msg_team_select(
+    city: str,
+    action_type: str,
+    exercise: str,
+    last_result: Optional[str] = None,
+) -> str:
+    header = (
+        "<blockquote>"
+        f"<b>Город:</b>  {_esc(city)}\n"
+        f"<b>Действие:</b>  {_action_label(action_type)}\n"
+        f"<b>Упражнение:</b>  {_esc(exercise)}"
+        "</blockquote>"
+    )
+    if last_result:
+        return (
+            f"{header}\n"
+            "\n"
+            f"<i>{_esc(last_result)}</i>\n"
+            "\n"
+            "Выберите следующую команду:"
+        )
+    return f"{header}\n\nВыберите команду:"
+
+
+def msg_error(text: str) -> str:
+    return f"<b>Ошибка</b>\n\n{text}"
+
+
+def msg_no_cities() -> str:
+    return (
+        "<b>Бот не настроен</b>\n"
+        "\n"
+        "Список городов не задан в конфигурации.\n"
+        "Обратитесь к администратору."
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Keyboards
+# ---------------------------------------------------------------------------
+
+def _chunk_buttons(
     items: list[str],
     prefix: str,
     columns: int = 2,
 ) -> list[list[InlineKeyboardButton]]:
-    """Create button rows with N columns."""
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for i, text in enumerate(items):
@@ -133,48 +167,16 @@ def _chunk_keyboard_buttons(
         rows.append(row)
     return rows
 
-def _exercise_keyboard(exercises: list[str], action_type: str) -> InlineKeyboardMarkup:
-    # Exercises: one button per row for easier tapping/reading
-    keyboard = _chunk_keyboard_buttons(exercises, CALLBACK_EXERCISE_PREFIX, columns=1)
-    keyboard.append([
-        InlineKeyboardButton("К городам", callback_data=CALLBACK_NAV_BACK_TO_CITIES),
-        _toggle_action_button(action_type),
-    ])
-    return InlineKeyboardMarkup(keyboard)
 
-def _team_keyboard(teams: list[str], action_type: str) -> InlineKeyboardMarkup:
-    # Teams: one button per row for easier tapping/reading
-    keyboard = _chunk_keyboard_buttons(teams, CALLBACK_TEAM_PREFIX, columns=1)
-    keyboard.append(
-        [
-            InlineKeyboardButton("К упражнениям", callback_data=CALLBACK_NAV_BACK_TO_EXERCISES),
-            _toggle_action_button(action_type),
-        ]
-    )
-    return InlineKeyboardMarkup(keyboard)
+def _toggle_button(action_type: str) -> InlineKeyboardButton:
+    if action_type == ACTION_UNCHECK:
+        label = "Переключить на: отметить"
+    else:
+        label = "Переключить на: снять отметку"
+    return InlineKeyboardButton(label, callback_data=CALLBACK_ACTION_TOGGLE)
 
-async def _render_current_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Redraw current step for callback-driven navigation."""
-    text, keyboard = await _get_current_step_prompt(context)
-    await update.callback_query.edit_message_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="Markdown",
-    )
-
-async def _reply_current_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply with current step for message-driven navigation."""
-    if not update.message:
-        return
-    text, keyboard = await _get_current_step_prompt(context)
-    await update.message.reply_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="Markdown",
-    )
 
 def _city_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
-    """Keyboard with city name buttons."""
     cities = context.application.bot_data.get("cities") or []
     keyboard = [
         [InlineKeyboardButton(city, callback_data=f"{CALLBACK_CITY_PREFIX}{i}")]
@@ -182,13 +184,43 @@ def _city_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# Exercise list filter
-N_EXERCISES_ENV = "N_EXERCISES"
-EXERCISE_NAMES_ENV = "EXCLUDED_NAMES"
-DEFAULT_EXCLUDED_NAMES = ["Сдано задач", "Разница"]
+
+def _action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Отметить выполнение", callback_data=CALLBACK_ACTION_CHECK)],
+        [InlineKeyboardButton("Снять отметку", callback_data=CALLBACK_ACTION_UNCHECK)],
+        [InlineKeyboardButton("Сменить город", callback_data=CALLBACK_NAV_BACK_TO_CITIES)],
+    ])
+
+
+def _exercise_keyboard(exercises: list[str], action_type: str) -> InlineKeyboardMarkup:
+    keyboard = _chunk_buttons(exercises, CALLBACK_EXERCISE_PREFIX, columns=1)
+    keyboard.append([
+        InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_ACTIONS),
+    ])
+    keyboard.append([_toggle_button(action_type)])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _team_keyboard(teams: list[str], action_type: str) -> InlineKeyboardMarkup:
+    keyboard = _chunk_buttons(teams, CALLBACK_TEAM_PREFIX, columns=1)
+    keyboard.append([
+        InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_EXERCISES),
+    ])
+    keyboard.append([_toggle_button(action_type)])
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ---------------------------------------------------------------------------
+#  Env helpers
+# ---------------------------------------------------------------------------
+
+def _get_cities_from_env() -> list[str]:
+    raw = os.getenv(CITIES_ENV, "")
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
 
 def _get_exercise_filter():
-    """Return (max_count, exclude_filter) for get_exercises."""
     exclude_raw = os.getenv(EXERCISE_NAMES_ENV)
     if exclude_raw and exclude_raw.strip():
         return None, [s.strip() for s in exclude_raw.split(",") if s.strip()]
@@ -200,8 +232,20 @@ def _get_exercise_filter():
             pass
     return None, DEFAULT_EXCLUDED_NAMES
 
+
+def get_manager(context: ContextTypes.DEFAULT_TYPE) -> SheetsManager:
+    return context.application.bot_data["sheets_manager"]
+
+
+def get_spreadsheet_id(context: ContextTypes.DEFAULT_TYPE) -> str:
+    return context.application.bot_data["spreadsheet_id"]
+
+
+# ---------------------------------------------------------------------------
+#  Initialization
+# ---------------------------------------------------------------------------
+
 async def post_init(application: Application) -> None:
-    """Initialize SheetsManager and store in bot_data."""
     credentials_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
     spreadsheet_id = os.getenv("SPREADSHEET_ID")
     if not credentials_file or not spreadsheet_id:
@@ -214,28 +258,91 @@ async def post_init(application: Application) -> None:
     application.bot_data["spreadsheet_id"] = spreadsheet_id
     application.bot_data["exercise_filter"] = _get_exercise_filter()
     application.bot_data["cities"] = _get_cities_from_env()
-    logger.info("SheetsManager initialized.")
+
+    await application.bot.set_my_commands([
+        BotCommand("start", "Начать работу"),
+    ])
+    logger.info("Bot initialized.")
+
+
+# ---------------------------------------------------------------------------
+#  Navigation helpers
+# ---------------------------------------------------------------------------
+
+def _get_current_step_content(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[str, InlineKeyboardMarkup]:
+    city = context.user_data.get(KEY_CITY)
+    action = context.user_data.get(KEY_ACTION_TYPE)
+    exercises = context.user_data.get(KEY_EXERCISES)
+    selected_exercise = context.user_data.get(KEY_SELECTED_EXERCISE)
+    teams = context.user_data.get(KEY_TEAMS)
+    last_result = context.user_data.get(KEY_LAST_RESULT)
+
+    if not city:
+        return msg_welcome(), _city_keyboard(context)
+
+    if not action:
+        return msg_action_select(city), _action_keyboard()
+
+    if exercises and not selected_exercise:
+        return (
+            msg_exercise_select(city, action),
+            _exercise_keyboard(exercises, action),
+        )
+
+    if teams and selected_exercise:
+        return (
+            msg_team_select(city, action, selected_exercise, last_result),
+            _team_keyboard(teams, action),
+        )
+
+    return msg_action_select(city), _action_keyboard()
+
+
+async def _render_current_step(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    text, keyboard = _get_current_step_content(context)
+    await update.callback_query.edit_message_text(
+        text, reply_markup=keyboard, parse_mode=PARSE_MODE,
+    )
+
+
+async def _reply_current_step(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message:
+        return
+    text, keyboard = _get_current_step_content(context)
+    await update.message.reply_text(
+        text, reply_markup=keyboard, parse_mode=PARSE_MODE,
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Handlers
+# ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start: ALWAYS show city selection first + reset city."""
-    context.user_data.pop(KEY_CITY, None)
+    context.user_data.clear()
 
     cities = context.application.bot_data.get("cities") or []
     if not cities:
-        await update.message.reply_text("Список городов не настроен.")
+        await update.message.reply_text(msg_no_cities(), parse_mode=PARSE_MODE)
         return
 
     await update.message.reply_text(
-        MESSAGE_START_WITH_CITY,
+        msg_welcome(),
         reply_markup=_city_keyboard(context),
-        parse_mode="Markdown",
+        parse_mode=PARSE_MODE,
     )
 
+
 async def callback_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """User selected city: save it and show actions ONLY."""
     await update.callback_query.answer()
     data = update.callback_query.data
-    if not data.startswith(CALLBACK_CITY_PREFIX):
+    if not data or not data.startswith(CALLBACK_CITY_PREFIX):
         return
 
     try:
@@ -245,163 +352,175 @@ async def callback_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     cities = context.application.bot_data.get("cities") or []
     if not cities or index < 0 or index >= len(cities):
-        await update.callback_query.edit_message_text(MESSAGE_ERROR_GENERIC)
         return
 
     city = cities[index]
+    context.user_data.clear()
     context.user_data[KEY_CITY] = city
 
-    # reset flow state on city change
-    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS, KEY_ACTION_TYPE):
-        context.user_data.pop(key, None)
-
     await update.callback_query.edit_message_text(
-        f"{_header_text(city=city, action_type=None)}{MESSAGE_ACTIONS}",
+        msg_action_select(city),
         reply_markup=_action_keyboard(),
-        parse_mode="Markdown",
+        parse_mode=PARSE_MODE,
     )
 
-async def _start_exercise_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, action_type: str) -> None:
-    """Load exercises and show exercise buttons. action_type is ACTION_CHECK or ACTION_UNCHECK."""
+
+async def callback_action_check(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    await _start_exercise_flow(update, context, ACTION_CHECK)
+
+
+async def callback_action_uncheck(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    await _start_exercise_flow(update, context, ACTION_UNCHECK)
+
+
+async def _start_exercise_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    action_type: str,
+) -> None:
     context.user_data[KEY_ACTION_TYPE] = action_type
-    # reset deeper flow state
     context.user_data.pop(KEY_SELECTED_EXERCISE, None)
     context.user_data.pop(KEY_TEAMS, None)
+    context.user_data.pop(KEY_LAST_RESULT, None)
+
     manager = get_manager(context)
     spreadsheet_id = get_spreadsheet_id(context)
 
     try:
-        max_count, exclude_filter = context.application.bot_data.get("exercise_filter", (None, None))
+        max_count, exclude_filter = context.application.bot_data.get(
+            "exercise_filter", (None, None),
+        )
         exercises = await manager.get_exercises(
             spreadsheet_id,
             max_count=max_count,
             excluded_names=exclude_filter,
         )
-    except (GoogleSheetsAPIError, AuthenticationError) as e:
-        logger.exception("Failed to get exercises")
-        msg = MESSAGE_ERROR_AUTH if isinstance(e, AuthenticationError) else MESSAGE_ERROR_SHEETS
-        await update.callback_query.edit_message_text(msg)
+    except AuthenticationError:
+        logger.exception("Auth error loading exercises")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось авторизоваться. Обратитесь к администратору."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+    except GoogleSheetsAPIError:
+        logger.exception("API error loading exercises")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось загрузить упражнения. Попробуйте позже."),
+            parse_mode=PARSE_MODE,
+        )
         return
 
     if not exercises:
-        await update.callback_query.edit_message_text("В таблице нет упражнений.")
+        await update.callback_query.edit_message_text(
+            msg_error("В таблице пока нет упражнений."),
+            parse_mode=PARSE_MODE,
+        )
         return
 
     context.user_data[KEY_EXERCISES] = exercises
-    city = context.user_data.get(KEY_CITY)
-    header = _header_text(city=city, action_type=action_type)
+    city = context.user_data.get(KEY_CITY, "")
+
     await update.callback_query.edit_message_text(
-        f"{header}{MESSAGE_SELECT_EXERCISE}",
+        msg_exercise_select(city, action_type),
         reply_markup=_exercise_keyboard(exercises, action_type),
-        parse_mode="Markdown",
+        parse_mode=PARSE_MODE,
     )
 
-async def callback_action_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start check flow."""
-    await update.callback_query.answer()
-    await _start_exercise_flow(update, context, ACTION_CHECK)
 
-async def callback_action_uncheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start uncheck flow."""
-    await update.callback_query.answer()
-    await _start_exercise_flow(update, context, ACTION_UNCHECK)
-
-async def callback_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """User selected exercise: save it, load teams, show inline team buttons."""
+async def callback_exercise(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
     await update.callback_query.answer()
     data = update.callback_query.data
-    if not data.startswith(CALLBACK_EXERCISE_PREFIX):
+    if not data or not data.startswith(CALLBACK_EXERCISE_PREFIX):
         return
 
     try:
-        index = int(data[len(CALLBACK_EXERCISE_PREFIX) :], 10)
+        index = int(data[len(CALLBACK_EXERCISE_PREFIX):], 10)
     except ValueError:
         return
 
     exercises = context.user_data.get(KEY_EXERCISES)
     if not exercises or index < 0 or index >= len(exercises):
-        await update.callback_query.edit_message_text(MESSAGE_ERROR_GENERIC)
         return
 
     exercise_name = exercises[index]
     context.user_data[KEY_SELECTED_EXERCISE] = exercise_name
+    context.user_data.pop(KEY_LAST_RESULT, None)
 
-    manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
     city = context.user_data.get(KEY_CITY)
     action_type = context.user_data.get(KEY_ACTION_TYPE, ACTION_CHECK)
 
     if not city:
-        await update.callback_query.edit_message_text(MESSAGE_NO_CITY)
+        await update.callback_query.edit_message_text(
+            msg_error("Город не выбран. Отправьте /start."),
+            parse_mode=PARSE_MODE,
+        )
         return
+
+    manager = get_manager(context)
+    spreadsheet_id = get_spreadsheet_id(context)
 
     try:
         teams = await manager.get_teams(spreadsheet_id, city=city)
-    except (GoogleSheetsAPIError, AuthenticationError) as e:
-        logger.exception("Failed to get teams")
-        msg = MESSAGE_ERROR_AUTH if isinstance(e, AuthenticationError) else MESSAGE_ERROR_SHEETS
-        await update.callback_query.edit_message_text(msg)
+    except AuthenticationError:
+        logger.exception("Auth error loading teams")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось авторизоваться. Обратитесь к администратору."),
+            parse_mode=PARSE_MODE,
+        )
+        context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+        return
+    except GoogleSheetsAPIError:
+        logger.exception("API error loading teams")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось загрузить команды. Попробуйте позже."),
+            parse_mode=PARSE_MODE,
+        )
         context.user_data.pop(KEY_SELECTED_EXERCISE, None)
         return
 
     if not teams:
-        await update.callback_query.edit_message_text("В таблице нет команд.")
+        await update.callback_query.edit_message_text(
+            msg_error("В таблице пока нет команд."),
+            parse_mode=PARSE_MODE,
+        )
         context.user_data.pop(KEY_SELECTED_EXERCISE, None)
         return
 
     context.user_data[KEY_TEAMS] = teams
-    header = _header_text(city=city, action_type=action_type, exercise_name=exercise_name)
+
     await update.callback_query.edit_message_text(
-        f"{header}{MESSAGE_SELECT_TEAM}",
+        msg_team_select(city, action_type, exercise_name),
         reply_markup=_team_keyboard(teams, action_type),
-        parse_mode="Markdown",
+        parse_mode=PARSE_MODE,
     )
 
-async def callback_action_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Toggle action mode (check <-> uncheck) and redraw current step."""
-    await update.callback_query.answer()
-    current = context.user_data.get(KEY_ACTION_TYPE, ACTION_CHECK)
-    context.user_data[KEY_ACTION_TYPE] = ACTION_UNCHECK if current != ACTION_UNCHECK else ACTION_CHECK
 
-    await _render_current_step(update, context)
-
-async def callback_nav_back_to_exercises(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Go back from team selection to exercise selection."""
-    await update.callback_query.answer()
-    context.user_data.pop(KEY_TEAMS, None)
-    context.user_data.pop(KEY_SELECTED_EXERCISE, None)
-
-    await _render_current_step(update, context)
-
-async def callback_nav_back_to_cities(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Go back from exercise selection to city selection."""
-    await update.callback_query.answer()
-    # Reset all flow state except city (we'll reset city too to show city selection)
-    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS, KEY_ACTION_TYPE, KEY_CITY):
-        context.user_data.pop(key, None)
-
-    await update.callback_query.edit_message_text(
-        MESSAGE_START_WITH_CITY,
-        reply_markup=_city_keyboard(context),
-        parse_mode="Markdown",
-    )
-
-async def callback_team(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute check/uncheck after user selected team (exercise is already selected)."""
-    await update.callback_query.answer()
+async def callback_team(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
     data = update.callback_query.data
-    if not data.startswith(CALLBACK_TEAM_PREFIX):
+    if not data or not data.startswith(CALLBACK_TEAM_PREFIX):
+        await update.callback_query.answer()
         return
 
     try:
         index = int(data[len(CALLBACK_TEAM_PREFIX):], 10)
     except ValueError:
+        await update.callback_query.answer()
         return
 
     teams = context.user_data.get(KEY_TEAMS)
     exercise_name = context.user_data.get(KEY_SELECTED_EXERCISE)
     if not teams or exercise_name is None or index < 0 or index >= len(teams):
-        await update.callback_query.edit_message_text(MESSAGE_ERROR_GENERIC)
+        await update.callback_query.answer("Произошла ошибка", show_alert=True)
         return
 
     team_name = teams[index]
@@ -411,7 +530,7 @@ async def callback_team(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     city = context.user_data.get(KEY_CITY)
 
     if not city:
-        await update.callback_query.edit_message_text(MESSAGE_NO_CITY)
+        await update.callback_query.answer("Город не выбран", show_alert=True)
         return
 
     try:
@@ -430,73 +549,118 @@ async def callback_team(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 city=city,
             )
     except TeamNotFoundException:
-        await update.callback_query.edit_message_text(
-            f"Команда «{team_name}» не найдена в таблице."
+        await update.callback_query.answer(
+            f"Команда \u00ab{team_name}\u00bb не найдена в таблице",
+            show_alert=True,
         )
+        return
     except ExerciseNotFoundException:
-        await update.callback_query.edit_message_text(
-            f"Упражнение «{exercise_name}» не найдено в таблице."
+        await update.callback_query.answer(
+            f"Упражнение \u00ab{exercise_name}\u00bb не найдено в таблице",
+            show_alert=True,
         )
-    except (GoogleSheetsAPIError, AuthenticationError) as e:
+        return
+    except (GoogleSheetsAPIError, AuthenticationError):
         logger.exception("Sheets operation failed")
-        msg = MESSAGE_ERROR_AUTH if isinstance(e, AuthenticationError) else MESSAGE_ERROR_SHEETS
-        await update.callback_query.edit_message_text(msg)
-    else:
-        done_message = MESSAGE_UNCHECK_DONE if action_type == ACTION_UNCHECK else MESSAGE_DONE
-        await update.callback_query.edit_message_text(
-            done_message,
-            reply_markup=_action_keyboard(),
+        await update.callback_query.answer(
+            "Не удалось выполнить операцию. Попробуйте ещё раз.",
+            show_alert=True,
         )
+        return
 
-    # Clear temporary state (KEEP city)
-    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS, KEY_ACTION_TYPE):
+    if action_type == ACTION_UNCHECK:
+        toast = "Отметка снята"
+        result_line = f"\u00ab{team_name}\u00bb \u2014 отметка снята"
+    else:
+        toast = "Выполнение отмечено"
+        result_line = f"\u00ab{team_name}\u00bb \u2014 выполнение отмечено"
+
+    context.user_data[KEY_LAST_RESULT] = result_line
+
+    await update.callback_query.answer(toast)
+    await update.callback_query.edit_message_text(
+        msg_team_select(city, action_type, exercise_name, last_result=result_line),
+        reply_markup=_team_keyboard(teams, action_type),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_action_toggle(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    current = context.user_data.get(KEY_ACTION_TYPE, ACTION_CHECK)
+    new_action = ACTION_UNCHECK if current != ACTION_UNCHECK else ACTION_CHECK
+    context.user_data[KEY_ACTION_TYPE] = new_action
+    context.user_data.pop(KEY_LAST_RESULT, None)
+
+    new_label = _action_label(new_action).capitalize()
+    await update.callback_query.answer(f"Режим: {new_label}")
+    await _render_current_step(update, context)
+
+
+async def callback_nav_back_to_exercises(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    context.user_data.pop(KEY_TEAMS, None)
+    context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+    context.user_data.pop(KEY_LAST_RESULT, None)
+    await _render_current_step(update, context)
+
+
+async def callback_nav_back_to_actions(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS, KEY_ACTION_TYPE, KEY_LAST_RESULT):
         context.user_data.pop(key, None)
+    await _render_current_step(update, context)
 
-async def _get_current_step_prompt(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Determine what the user should do next and return (text, reply_markup).
-    """
-    city = context.user_data.get(KEY_CITY)
-    action = context.user_data.get(KEY_ACTION_TYPE)
-    teams = context.user_data.get(KEY_TEAMS)
-    exercises = context.user_data.get(KEY_EXERCISES)
 
-    if not city:
-        return MESSAGE_START_WITH_CITY, _city_keyboard(context)
+async def callback_nav_back_to_cities(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    context.user_data.clear()
+    await update.callback_query.edit_message_text(
+        msg_welcome(),
+        reply_markup=_city_keyboard(context),
+        parse_mode=PARSE_MODE,
+    )
 
-    if not action:
-        return MESSAGE_ACTIONS, _action_keyboard()
 
-    # After action is selected the next step is selecting EXERCISE, then TEAM.
-    if exercises and not context.user_data.get(KEY_SELECTED_EXERCISE):
-        header = _header_text(city=city, action_type=action)
-        return f"{header}{MESSAGE_SELECT_EXERCISE}", _exercise_keyboard(exercises, action)
+# ---------------------------------------------------------------------------
+#  Fallbacks
+# ---------------------------------------------------------------------------
 
-    if teams:
-        ex = context.user_data.get(KEY_SELECTED_EXERCISE)
-        header = _header_text(city=city, action_type=action, exercise_name=ex)
-        return f"{header}{MESSAGE_SELECT_TEAM}", _team_keyboard(teams, action)
-
-    return f"{_header_text(city=city, action_type=None)}{MESSAGE_ACTIONS}", _action_keyboard()
-
-async def fallback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handle ANY unexpected callback query.
-    """
+async def fallback_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
     await update.callback_query.answer()
     await _render_current_step(update, context)
 
-async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handle ANY text message that is not expected.
-    """
+
+async def fallback_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if context.user_data.get(KEY_CITY):
+        await _reply_current_step(update, context)
+        return
+    await update.message.reply_text(
+        "Отправьте /start, чтобы начать работу.",
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def unknown_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
     await _reply_current_step(update, context)
 
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handles unknown command.
-    """
-    await _reply_current_step(update, context)
+
+# ---------------------------------------------------------------------------
+#  Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     token = os.getenv("TG_TOKEN")
@@ -507,10 +671,13 @@ def main() -> None:
         Application.builder()
         .token(token)
         .post_init(post_init)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
         .build()
     )
 
-    # Handlers order matters!
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(
         CallbackQueryHandler(callback_city, pattern=f"^{CALLBACK_CITY_PREFIX}\\d+$")
@@ -531,19 +698,32 @@ def main() -> None:
         CallbackQueryHandler(callback_team, pattern=f"^{CALLBACK_TEAM_PREFIX}\\d+$")
     )
     application.add_handler(
-        CallbackQueryHandler(callback_nav_back_to_exercises, pattern=f"^{CALLBACK_NAV_BACK_TO_EXERCISES}$")
+        CallbackQueryHandler(
+            callback_nav_back_to_exercises,
+            pattern=f"^{CALLBACK_NAV_BACK_TO_EXERCISES}$",
+        )
     )
     application.add_handler(
-        CallbackQueryHandler(callback_nav_back_to_cities, pattern=f"^{CALLBACK_NAV_BACK_TO_CITIES}$")
+        CallbackQueryHandler(
+            callback_nav_back_to_actions,
+            pattern=f"^{CALLBACK_NAV_BACK_TO_ACTIONS}$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_nav_back_to_cities,
+            pattern=f"^{CALLBACK_NAV_BACK_TO_CITIES}$",
+        )
     )
 
     application.add_handler(CallbackQueryHandler(fallback_callback))
-    #Simple text handler
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_message))
-    # Unknown command handler
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_message),
+    )
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
-    application.run_polling()
+    application.run_polling(bootstrap_retries=5)
+
 
 if __name__ == "__main__":
     main()
