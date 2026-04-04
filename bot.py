@@ -35,7 +35,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PARSE_MODE = "HTML"
-
 KEY_SELECTED_EXERCISE = "selected_exercise"
 KEY_EXERCISES = "exercises"
 KEY_TEAMS = "teams"
@@ -82,10 +81,7 @@ def _action_label(action_type: str) -> str:
 
 def msg_welcome() -> str:
     return (
-        "<b>CodeGym Assistant</b>\n"
-        "\n"
-        "Бот для отметки выполненных\n"
-        "упражнений в таблице результатов.\n"
+        "<b>Код Спорта</b>\n"
         "\n"
         "Выберите ваш город:"
     )
@@ -124,13 +120,7 @@ def msg_team_select(
         "</blockquote>"
     )
     if last_result:
-        return (
-            f"{header}\n"
-            "\n"
-            f"<i>{_esc(last_result)}</i>\n"
-            "\n"
-            "Выберите следующую команду:"
-        )
+        return f"{header}\n\n<i>{_esc(last_result)}</i>"
     return f"{header}\n\nВыберите команду:"
 
 
@@ -142,8 +132,7 @@ def msg_no_cities() -> str:
     return (
         "<b>Бот не настроен</b>\n"
         "\n"
-        "Список городов не задан в конфигурации.\n"
-        "Обратитесь к администратору."
+        "Список городов не задан в конфигурации. Обратитесь к администратору."
     )
 
 
@@ -154,18 +143,22 @@ def msg_no_cities() -> str:
 def _chunk_buttons(
     items: list[str],
     prefix: str,
-    columns: int = 2,
+    columns: int = 1,
+    start_index: int = 0,
 ) -> list[list[InlineKeyboardButton]]:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for i, text in enumerate(items):
-        row.append(InlineKeyboardButton(text, callback_data=f"{prefix}{i}"))
+        row.append(InlineKeyboardButton(
+            text, callback_data=f"{prefix}{start_index + i}",
+        ))
         if len(row) >= columns:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
     return rows
+
 
 
 def _toggle_button(action_type: str) -> InlineKeyboardButton:
@@ -178,10 +171,7 @@ def _toggle_button(action_type: str) -> InlineKeyboardButton:
 
 def _city_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
     cities = context.application.bot_data.get("cities") or []
-    keyboard = [
-        [InlineKeyboardButton(city, callback_data=f"{CALLBACK_CITY_PREFIX}{i}")]
-        for i, city in enumerate(cities)
-    ]
+    keyboard = _chunk_buttons(cities, CALLBACK_CITY_PREFIX, columns=2)
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -193,7 +183,9 @@ def _action_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def _exercise_keyboard(exercises: list[str], action_type: str) -> InlineKeyboardMarkup:
+def _exercise_keyboard(
+    exercises: list[str], action_type: str,
+) -> InlineKeyboardMarkup:
     keyboard = _chunk_buttons(exercises, CALLBACK_EXERCISE_PREFIX, columns=1)
     keyboard.append([
         InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_ACTIONS),
@@ -202,7 +194,9 @@ def _exercise_keyboard(exercises: list[str], action_type: str) -> InlineKeyboard
     return InlineKeyboardMarkup(keyboard)
 
 
-def _team_keyboard(teams: list[str], action_type: str) -> InlineKeyboardMarkup:
+def _team_keyboard(
+    teams: list[str], action_type: str,
+) -> InlineKeyboardMarkup:
     keyboard = _chunk_buttons(teams, CALLBACK_TEAM_PREFIX, columns=1)
     keyboard.append([
         InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_EXERCISES),
@@ -326,12 +320,10 @@ async def _reply_current_step(
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
-
     cities = context.application.bot_data.get("cities") or []
     if not cities:
         await update.message.reply_text(msg_no_cities(), parse_mode=PARSE_MODE)
         return
-
     await update.message.reply_text(
         msg_welcome(),
         reply_markup=_city_keyboard(context),
@@ -344,12 +336,10 @@ async def callback_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     data = update.callback_query.data
     if not data or not data.startswith(CALLBACK_CITY_PREFIX):
         return
-
     try:
         index = int(data[len(CALLBACK_CITY_PREFIX):], 10)
     except ValueError:
         return
-
     cities = context.application.bot_data.get("cities") or []
     if not cities or index < 0 or index >= len(cities):
         return
@@ -440,12 +430,10 @@ async def callback_exercise(
     data = update.callback_query.data
     if not data or not data.startswith(CALLBACK_EXERCISE_PREFIX):
         return
-
     try:
         index = int(data[len(CALLBACK_EXERCISE_PREFIX):], 10)
     except ValueError:
         return
-
     exercises = context.user_data.get(KEY_EXERCISES)
     if not exercises or index < 0 or index >= len(exercises):
         return
@@ -510,7 +498,6 @@ async def callback_team(
     if not data or not data.startswith(CALLBACK_TEAM_PREFIX):
         await update.callback_query.answer()
         return
-
     try:
         index = int(data[len(CALLBACK_TEAM_PREFIX):], 10)
     except ValueError:
@@ -550,13 +537,13 @@ async def callback_team(
             )
     except TeamNotFoundException:
         await update.callback_query.answer(
-            f"Команда \u00ab{team_name}\u00bb не найдена в таблице",
+            f"\u00ab{team_name}\u00bb \u2014 команда не найдена в таблице",
             show_alert=True,
         )
         return
     except ExerciseNotFoundException:
         await update.callback_query.answer(
-            f"Упражнение \u00ab{exercise_name}\u00bb не найдено в таблице",
+            f"\u00ab{exercise_name}\u00bb \u2014 упражнение не найдено в таблице",
             show_alert=True,
         )
         return
@@ -598,6 +585,7 @@ async def callback_action_toggle(
     await _render_current_step(update, context)
 
 
+
 async def callback_nav_back_to_exercises(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -612,7 +600,8 @@ async def callback_nav_back_to_actions(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     await update.callback_query.answer()
-    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS, KEY_ACTION_TYPE, KEY_LAST_RESULT):
+    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS,
+                KEY_ACTION_TYPE, KEY_LAST_RESULT):
         context.user_data.pop(key, None)
     await _render_current_step(update, context)
 
