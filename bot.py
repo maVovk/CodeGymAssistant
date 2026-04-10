@@ -81,7 +81,9 @@ def _action_label(action_type: str) -> str:
 
 def msg_welcome() -> str:
     return (
-        "<b>Код Спорта</b>\n"
+        "<blockquote>"
+        "<b>Код Спорта</b>"
+        "</blockquote>\n"
         "\n"
         "Выберите ваш город:"
     )
@@ -89,7 +91,9 @@ def msg_welcome() -> str:
 
 def msg_action_select(city: str) -> str:
     return (
-        f"<b>Город:</b>  {_esc(city)}\n"
+        "<blockquote>"
+        f"<b>Город:</b>  {_esc(city)}"
+        "</blockquote>\n"
         "\n"
         "Что необходимо сделать?"
     )
