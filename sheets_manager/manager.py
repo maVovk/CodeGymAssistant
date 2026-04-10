@@ -15,6 +15,7 @@ from .exceptions import (
     AuthenticationError,
 )
 from .utils import (
+    column_number_to_letter,
     validate_team_name,
     validate_exercise_name,
     validate_spreadsheet_id,
@@ -607,6 +608,221 @@ class SheetsManager:
             return exercise_names[:max_count]
         return exercise_names
     
+    async def add_exercise(
+        self,
+        spreadsheet_id: str,
+        exercise_name: str,
+        city: Optional[str] = None,
+    ) -> None:
+        """
+        Add a new exercise column to the spreadsheet.
+
+        Appends a new column at the end of the header row with the given name
+        (bold), inserts checkboxes for every existing team row, and
+        invalidates cache.
+        """
+        validate_spreadsheet_id(spreadsheet_id)
+        validate_exercise_name(exercise_name)
+        self._ensure_initialized()
+
+        try:
+            agc = await self._agcm.authorize()
+            spreadsheet = await agc.open_by_key(spreadsheet_id)
+            if city is not None:
+                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
+            else:
+                worksheet = await spreadsheet.get_worksheet(0)
+
+            header = await worksheet.row_values(1)
+            next_col = len(header) + 1
+
+            team_col = await worksheet.col_values(1)
+            team_count = max(len(team_col) - 1, 0)
+
+            col_letter = column_number_to_letter(next_col)
+            await worksheet.update_cell(1, next_col, exercise_name)
+
+            if team_count > 0:
+                cell_range = f"{col_letter}2:{col_letter}{1 + team_count}"
+                await worksheet.update(
+                    cell_range,
+                    [["FALSE"]] * team_count,
+                    raw=False,
+                )
+
+            sheet_id = worksheet.id
+            col_idx = next_col - 1
+
+            requests = [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": 1,
+                            "startColumnIndex": col_idx,
+                            "endColumnIndex": col_idx + 1,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "textFormat": {"bold": True}
+                            }
+                        },
+                        "fields": "userEnteredFormat.textFormat.bold",
+                    }
+                },
+            ]
+
+            if team_count > 0:
+                requests.append({
+                    "setDataValidation": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 1,
+                            "endRowIndex": 1 + team_count,
+                            "startColumnIndex": col_idx,
+                            "endColumnIndex": col_idx + 1,
+                        },
+                        "rule": {
+                            "condition": {"type": "BOOLEAN"},
+                            "showCustomUi": True,
+                        },
+                    }
+                })
+
+            await spreadsheet.batch_update({"requests": requests})
+
+            cache_key = f"{spreadsheet_id}:{city or 'default'}"
+            await self.cache.invalidate(cache_key)
+
+        except GoogleSheetsAPIError:
+            raise
+        except Exception as e:
+            raise GoogleSheetsAPIError(
+                f"Failed to add exercise '{exercise_name}': {str(e)}",
+                original_error=e,
+            )
+
+    async def rename_exercise(
+        self,
+        spreadsheet_id: str,
+        old_name: str,
+        new_name: str,
+        city: Optional[str] = None,
+    ) -> None:
+        """
+        Rename an exercise column header without touching its data.
+
+        Matches by exact name (case-sensitive) and preserves bold formatting.
+        """
+        validate_spreadsheet_id(spreadsheet_id)
+        validate_exercise_name(old_name)
+        validate_exercise_name(new_name)
+        self._ensure_initialized()
+
+        try:
+            agc = await self._agcm.authorize()
+            spreadsheet = await agc.open_by_key(spreadsheet_id)
+            if city is not None:
+                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
+            else:
+                worksheet = await spreadsheet.get_worksheet(0)
+
+            header = await worksheet.row_values(1)
+
+            col_index = None
+            for i, name in enumerate(header):
+                if name.strip() == old_name.strip():
+                    col_index = i + 1
+                    break
+
+            if col_index is None:
+                raise ExerciseNotFoundException(old_name, spreadsheet_id)
+
+            await worksheet.update_cell(1, col_index, new_name)
+
+            sheet_id = worksheet.id
+            col_idx = col_index - 1
+            await spreadsheet.batch_update({"requests": [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": 1,
+                            "startColumnIndex": col_idx,
+                            "endColumnIndex": col_idx + 1,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "textFormat": {"bold": True}
+                            }
+                        },
+                        "fields": "userEnteredFormat.textFormat.bold",
+                    }
+                },
+            ]})
+
+            cache_key = f"{spreadsheet_id}:{city or 'default'}"
+            await self.cache.invalidate(cache_key)
+
+        except (ExerciseNotFoundException, GoogleSheetsAPIError):
+            raise
+        except Exception as e:
+            raise GoogleSheetsAPIError(
+                f"Failed to rename exercise '{old_name}' -> '{new_name}': {str(e)}",
+                original_error=e,
+            )
+
+    async def remove_exercise(
+        self,
+        spreadsheet_id: str,
+        exercise_name: str,
+        city: Optional[str] = None,
+    ) -> None:
+        """
+        Remove an exercise column from the spreadsheet.
+
+        Finds the column by header name, deletes it entirely,
+        and invalidates the structure cache.
+        """
+        validate_spreadsheet_id(spreadsheet_id)
+        validate_exercise_name(exercise_name)
+        self._ensure_initialized()
+
+        try:
+            agc = await self._agcm.authorize()
+            spreadsheet = await agc.open_by_key(spreadsheet_id)
+            if city is not None:
+                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
+            else:
+                worksheet = await spreadsheet.get_worksheet(0)
+
+            header = await worksheet.row_values(1)
+            normalized = normalize_name(exercise_name)
+
+            col_index = None
+            for i, name in enumerate(header):
+                if normalize_name(name) == normalized:
+                    col_index = i + 1
+                    break
+
+            if col_index is None:
+                raise ExerciseNotFoundException(exercise_name, spreadsheet_id)
+
+            await worksheet.delete_columns(col_index)
+
+            cache_key = f"{spreadsheet_id}:{city or 'default'}"
+            await self.cache.invalidate(cache_key)
+
+        except (ExerciseNotFoundException, GoogleSheetsAPIError):
+            raise
+        except Exception as e:
+            raise GoogleSheetsAPIError(
+                f"Failed to remove exercise '{exercise_name}': {str(e)}",
+                original_error=e,
+            )
+
     async def invalidate_cache(self, spreadsheet_id: str) -> None:
         """
         Manually invalidate cache for a specific spreadsheet.
