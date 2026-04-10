@@ -55,6 +55,28 @@ CALLBACK_NAV_BACK_TO_EXERCISES = "nav:back_exercises"
 CALLBACK_NAV_BACK_TO_ACTIONS = "nav:back_actions"
 CALLBACK_NAV_BACK_TO_CITIES = "nav:back_cities"
 
+KEY_IS_ADMIN = "is_admin"
+KEY_ADMIN_CITY = "admin_city"
+KEY_ADMIN_STATE = "admin_state"
+KEY_ADMIN_EXERCISES = "admin_exercises"
+KEY_ADMIN_EXERCISE_NAME = "admin_exercise_name"
+
+ADMIN_AWAITING_PASSWORD = "awaiting_password"
+ADMIN_AWAITING_NAME = "awaiting_name"
+ADMIN_AWAITING_RENAME = "awaiting_rename"
+KEY_ADMIN_PASSWORD_ATTEMPTS = "admin_pw_attempts"
+ADMIN_MAX_PASSWORD_ATTEMPTS = 3
+
+CALLBACK_ADMIN_CITY_PREFIX = "adm_city:"
+CALLBACK_ADMIN_ADD = "adm:add"
+CALLBACK_ADMIN_REMOVE = "adm:remove"
+CALLBACK_ADMIN_RENAME = "adm:rename"
+CALLBACK_ADMIN_EXERCISE_PREFIX = "adm_ex:"
+CALLBACK_ADMIN_RENAME_EXERCISE_PREFIX = "adm_ren:"
+CALLBACK_ADMIN_CONFIRM_DELETE = "adm:confirm_del"
+CALLBACK_ADMIN_BACK_CITIES = "adm:back_cities"
+CALLBACK_ADMIN_BACK_ACTIONS = "adm:back_actions"
+
 CITIES_ENV = "CITIES"
 N_EXERCISES_ENV = "N_EXERCISES"
 EXERCISE_NAMES_ENV = "EXCLUDED_NAMES"
@@ -69,20 +91,20 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
 #  Message templates
 # ---------------------------------------------------------------------------
 
 def _action_label(action_type: str) -> str:
     if action_type == ACTION_UNCHECK:
-        return "снять отметку"
-    return "отметить выполнение"
+        return "отменить зачёт"
+    return "зачесть упражнение"
 
 
 def msg_welcome() -> str:
     return (
         "<blockquote>"
-        "<b>Код Спорта</b>"
+        "<b>Трекер упражнений</b>"
         "</blockquote>\n"
         "\n"
         "Выберите ваш город:"
@@ -140,6 +162,86 @@ def msg_no_cities() -> str:
     )
 
 
+def msg_admin_welcome() -> str:
+    return (
+        "<blockquote>"
+        "<b>Панель администратора</b>"
+        "</blockquote>\n"
+        "\n"
+        "Выберите город:"
+    )
+
+
+def msg_admin_action(city: str, result: Optional[str] = None) -> str:
+    header = (
+        "<blockquote>"
+        f"<b>Панель администратора</b>\n"
+        f"<b>Город:</b>  {_esc(city)}"
+        "</blockquote>"
+    )
+    if result:
+        return f"{header}\n\n<i>{_esc(result)}</i>\n\nВыберите действие:"
+    return f"{header}\n\nВыберите действие:"
+
+
+def msg_admin_enter_name(city: str) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Панель администратора</b>\n"
+        f"<b>Город:</b>  {_esc(city)}"
+        "</blockquote>\n"
+        "\n"
+        "Введите название нового упражнения:"
+    )
+
+
+def msg_admin_select_exercise(city: str) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Панель администратора</b>\n"
+        f"<b>Город:</b>  {_esc(city)}"
+        "</blockquote>\n"
+        "\n"
+        "Выберите упражнение для удаления:"
+    )
+
+
+def msg_admin_select_exercise_rename(city: str) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Панель администратора</b>\n"
+        f"<b>Город:</b>  {_esc(city)}"
+        "</blockquote>\n"
+        "\n"
+        "Выберите упражнение для переименования:"
+    )
+
+
+def msg_admin_enter_new_name(city: str, exercise: str) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Панель администратора</b>\n"
+        f"<b>Город:</b>  {_esc(city)}\n"
+        f"<b>Упражнение:</b>  {_esc(exercise)}"
+        "</blockquote>\n"
+        "\n"
+        "Введите новое название:"
+    )
+
+
+def msg_admin_confirm_delete(city: str, exercise: str) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Панель администратора</b>\n"
+        f"<b>Город:</b>  {_esc(city)}\n"
+        f"<b>Упражнение:</b>  {_esc(exercise)}"
+        "</blockquote>\n"
+        "\n"
+        "Удалить это упражнение из таблицы?\n"
+        "<i>Это действие необратимо.</i>"
+    )
+
+
 # ---------------------------------------------------------------------------
 #  Keyboards
 # ---------------------------------------------------------------------------
@@ -167,9 +269,9 @@ def _chunk_buttons(
 
 def _toggle_button(action_type: str) -> InlineKeyboardButton:
     if action_type == ACTION_UNCHECK:
-        label = "Переключить на: отметить"
+        label = "Переключить на: зачесть упражнение"
     else:
-        label = "Переключить на: снять отметку"
+        label = "Переключить на: отменить зачёт"
     return InlineKeyboardButton(label, callback_data=CALLBACK_ACTION_TOGGLE)
 
 
@@ -181,8 +283,8 @@ def _city_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
 
 def _action_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Отметить выполнение", callback_data=CALLBACK_ACTION_CHECK)],
-        [InlineKeyboardButton("Снять отметку", callback_data=CALLBACK_ACTION_UNCHECK)],
+        [InlineKeyboardButton("Зачесть упражнение", callback_data=CALLBACK_ACTION_CHECK)],
+        [InlineKeyboardButton("Отменить зачёт", callback_data=CALLBACK_ACTION_UNCHECK)],
         [InlineKeyboardButton("Сменить город", callback_data=CALLBACK_NAV_BACK_TO_CITIES)],
     ])
 
@@ -207,6 +309,46 @@ def _team_keyboard(
     ])
     keyboard.append([_toggle_button(action_type)])
     return InlineKeyboardMarkup(keyboard)
+
+
+def _admin_city_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    cities = context.application.bot_data.get("cities") or []
+    keyboard = _chunk_buttons(cities, CALLBACK_ADMIN_CITY_PREFIX, columns=2)
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _admin_action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Добавить упражнение", callback_data=CALLBACK_ADMIN_ADD)],
+        [InlineKeyboardButton("Переименовать упражнение", callback_data=CALLBACK_ADMIN_RENAME)],
+        [InlineKeyboardButton("Удалить упражнение", callback_data=CALLBACK_ADMIN_REMOVE)],
+        [InlineKeyboardButton("Назад", callback_data=CALLBACK_ADMIN_BACK_CITIES)],
+    ])
+
+
+def _admin_exercise_keyboard(exercises: list[str]) -> InlineKeyboardMarkup:
+    keyboard = _chunk_buttons(exercises, CALLBACK_ADMIN_EXERCISE_PREFIX, columns=1)
+    keyboard.append([InlineKeyboardButton("Назад", callback_data=CALLBACK_ADMIN_BACK_ACTIONS)])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _admin_rename_exercise_keyboard(exercises: list[str]) -> InlineKeyboardMarkup:
+    keyboard = _chunk_buttons(exercises, CALLBACK_ADMIN_RENAME_EXERCISE_PREFIX, columns=1)
+    keyboard.append([InlineKeyboardButton("Назад", callback_data=CALLBACK_ADMIN_BACK_ACTIONS)])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _admin_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Отмена", callback_data=CALLBACK_ADMIN_BACK_ACTIONS)],
+    ])
+
+
+def _admin_confirm_delete_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Удалить", callback_data=CALLBACK_ADMIN_CONFIRM_DELETE)],
+        [InlineKeyboardButton("Отмена", callback_data=CALLBACK_ADMIN_BACK_ACTIONS)],
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +465,25 @@ async def _reply_current_step(
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.clear()
+    cities = context.application.bot_data.get("cities") or []
+    if not cities:
+        await update.message.reply_text(msg_no_cities(), parse_mode=PARSE_MODE)
+        return
+    await update.message.reply_text(
+        msg_welcome(),
+        reply_markup=_city_keyboard(context),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def cmd_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.message.reply_text(
+            "Отправьте /start, чтобы начать работу.",
+            parse_mode=PARSE_MODE,
+        )
+        return
     context.user_data.clear()
     cities = context.application.bot_data.get("cities") or []
     if not cities:
@@ -560,18 +721,26 @@ async def callback_team(
         return
 
     if action_type == ACTION_UNCHECK:
-        toast = "Отметка снята"
-        result_line = f"\u00ab{team_name}\u00bb \u2014 отметка снята"
+        toast = f"Команде \u00ab{team_name}\u00bb отменён зачёт"
+        result_line = f"Команде \u00ab{team_name}\u00bb успешно отменён зачёт о выполнении упражнения \u00ab{exercise_name}\u00bb"
     else:
-        toast = "Выполнение отмечено"
-        result_line = f"\u00ab{team_name}\u00bb \u2014 выполнение отмечено"
+        toast = f"Команде \u00ab{team_name}\u00bb зачтено"
+        result_line = f"Команде \u00ab{team_name}\u00bb успешно зачтено выполнение упражнения \u00ab{exercise_name}\u00bb"
 
-    context.user_data[KEY_LAST_RESULT] = result_line
+    context.user_data.pop(KEY_LAST_RESULT, None)
+    context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+    context.user_data.pop(KEY_TEAMS, None)
+    context.user_data.pop(KEY_EXERCISES, None)
 
     await update.callback_query.answer(toast)
     await update.callback_query.edit_message_text(
-        msg_team_select(city, action_type, exercise_name, last_result=result_line),
-        reply_markup=_team_keyboard(teams, action_type),
+        f"<i>{_esc(result_line)}</i>",
+        parse_mode=PARSE_MODE,
+    )
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=msg_action_select(city),
+        reply_markup=_action_keyboard(),
         parse_mode=PARSE_MODE,
     )
 
@@ -623,6 +792,467 @@ async def callback_nav_back_to_cities(
 
 
 # ---------------------------------------------------------------------------
+#  Admin handlers
+# ---------------------------------------------------------------------------
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if context.user_data.get(KEY_IS_ADMIN):
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=msg_admin_welcome(),
+            reply_markup=_admin_city_keyboard(context),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    context.user_data[KEY_ADMIN_STATE] = ADMIN_AWAITING_PASSWORD
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Введите пароль администратора:",
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def _admin_handle_password(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    password_input = update.message.text.strip()
+    context.user_data.pop(KEY_ADMIN_STATE, None)
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    password = os.getenv("ADMIN_PASSWORD", "")
+
+    if not password:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=msg_error("Пароль администратора не настроен."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    if password_input != password:
+        attempts = context.user_data.get(KEY_ADMIN_PASSWORD_ATTEMPTS, 0) + 1
+
+        if attempts >= ADMIN_MAX_PASSWORD_ATTEMPTS:
+            context.user_data.clear()
+            cities = context.application.bot_data.get("cities") or []
+            if not cities:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=msg_no_cities(),
+                    parse_mode=PARSE_MODE,
+                )
+                return
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=msg_welcome(),
+                reply_markup=_city_keyboard(context),
+                parse_mode=PARSE_MODE,
+            )
+            return
+
+        context.user_data[KEY_ADMIN_PASSWORD_ATTEMPTS] = attempts
+        context.user_data[KEY_ADMIN_STATE] = ADMIN_AWAITING_PASSWORD
+        remaining = ADMIN_MAX_PASSWORD_ATTEMPTS - attempts
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Неверный пароль. Осталось попыток: {remaining}",
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    context.user_data.clear()
+    context.user_data[KEY_IS_ADMIN] = True
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=msg_admin_welcome(),
+        reply_markup=_admin_city_keyboard(context),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_city(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+    await update.callback_query.answer()
+    data = update.callback_query.data
+    if not data or not data.startswith(CALLBACK_ADMIN_CITY_PREFIX):
+        return
+    try:
+        index = int(data[len(CALLBACK_ADMIN_CITY_PREFIX):], 10)
+    except ValueError:
+        return
+    cities = context.application.bot_data.get("cities") or []
+    if not cities or index < 0 or index >= len(cities):
+        return
+
+    city = cities[index]
+    context.user_data[KEY_ADMIN_CITY] = city
+    context.user_data.pop(KEY_ADMIN_STATE, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISES, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISE_NAME, None)
+
+    await update.callback_query.edit_message_text(
+        msg_admin_action(city),
+        reply_markup=_admin_action_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_add(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+    await update.callback_query.answer()
+    city = context.user_data.get(KEY_ADMIN_CITY)
+    if not city:
+        return
+
+    context.user_data[KEY_ADMIN_STATE] = ADMIN_AWAITING_NAME
+
+    await update.callback_query.edit_message_text(
+        msg_admin_enter_name(city),
+        reply_markup=_admin_cancel_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_remove(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+    await update.callback_query.answer()
+    city = context.user_data.get(KEY_ADMIN_CITY)
+    if not city:
+        return
+
+    manager = get_manager(context)
+    spreadsheet_id = get_spreadsheet_id(context)
+
+    try:
+        exercises = await manager.get_exercises(spreadsheet_id, city=city)
+    except (GoogleSheetsAPIError, AuthenticationError):
+        logger.exception("Failed to load exercises for admin")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось загрузить упражнения."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    if not exercises:
+        await update.callback_query.answer("В таблице нет упражнений", show_alert=True)
+        return
+
+    context.user_data[KEY_ADMIN_EXERCISES] = exercises
+
+    await update.callback_query.edit_message_text(
+        msg_admin_select_exercise(city),
+        reply_markup=_admin_exercise_keyboard(exercises),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_rename(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+    await update.callback_query.answer()
+    city = context.user_data.get(KEY_ADMIN_CITY)
+    if not city:
+        return
+
+    manager = get_manager(context)
+    spreadsheet_id = get_spreadsheet_id(context)
+
+    try:
+        exercises = await manager.get_exercises(spreadsheet_id, city=city)
+    except (GoogleSheetsAPIError, AuthenticationError):
+        logger.exception("Failed to load exercises for admin rename")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось загрузить упражнения."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    if not exercises:
+        await update.callback_query.answer("В таблице нет упражнений", show_alert=True)
+        return
+
+    context.user_data[KEY_ADMIN_EXERCISES] = exercises
+
+    await update.callback_query.edit_message_text(
+        msg_admin_select_exercise_rename(city),
+        reply_markup=_admin_rename_exercise_keyboard(exercises),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_rename_exercise(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+    await update.callback_query.answer()
+    data = update.callback_query.data
+    if not data or not data.startswith(CALLBACK_ADMIN_RENAME_EXERCISE_PREFIX):
+        return
+    try:
+        index = int(data[len(CALLBACK_ADMIN_RENAME_EXERCISE_PREFIX):], 10)
+    except ValueError:
+        return
+    exercises = context.user_data.get(KEY_ADMIN_EXERCISES)
+    if not exercises or index < 0 or index >= len(exercises):
+        return
+
+    exercise_name = exercises[index]
+    context.user_data[KEY_ADMIN_EXERCISE_NAME] = exercise_name
+    context.user_data[KEY_ADMIN_STATE] = ADMIN_AWAITING_RENAME
+    city = context.user_data.get(KEY_ADMIN_CITY, "")
+
+    await update.callback_query.edit_message_text(
+        msg_admin_enter_new_name(city, exercise_name),
+        reply_markup=_admin_cancel_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_exercise(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+    await update.callback_query.answer()
+    data = update.callback_query.data
+    if not data or not data.startswith(CALLBACK_ADMIN_EXERCISE_PREFIX):
+        return
+    try:
+        index = int(data[len(CALLBACK_ADMIN_EXERCISE_PREFIX):], 10)
+    except ValueError:
+        return
+    exercises = context.user_data.get(KEY_ADMIN_EXERCISES)
+    if not exercises or index < 0 or index >= len(exercises):
+        return
+
+    exercise_name = exercises[index]
+    context.user_data[KEY_ADMIN_EXERCISE_NAME] = exercise_name
+    city = context.user_data.get(KEY_ADMIN_CITY, "")
+
+    await update.callback_query.edit_message_text(
+        msg_admin_confirm_delete(city, exercise_name),
+        reply_markup=_admin_confirm_delete_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_confirm_delete(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.user_data.get(KEY_IS_ADMIN):
+        await update.callback_query.answer()
+        return
+
+    exercise_name = context.user_data.get(KEY_ADMIN_EXERCISE_NAME)
+    city = context.user_data.get(KEY_ADMIN_CITY)
+    if not exercise_name or not city:
+        await update.callback_query.answer("Произошла ошибка", show_alert=True)
+        return
+
+    manager = get_manager(context)
+    spreadsheet_id = get_spreadsheet_id(context)
+
+    try:
+        await manager.remove_exercise(spreadsheet_id, exercise_name, city=city)
+    except ExerciseNotFoundException:
+        await update.callback_query.answer(
+            "Упражнение не найдено в таблице", show_alert=True,
+        )
+        return
+    except (GoogleSheetsAPIError, AuthenticationError):
+        logger.exception("Failed to remove exercise")
+        await update.callback_query.answer(
+            "Не удалось удалить упражнение. Попробуйте позже.",
+            show_alert=True,
+        )
+        return
+
+    context.user_data.pop(KEY_ADMIN_EXERCISE_NAME, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISES, None)
+
+    await update.callback_query.answer("Упражнение удалено")
+    await update.callback_query.edit_message_text(
+        "<i>Упражнение успешно удалено</i>",
+        parse_mode=PARSE_MODE,
+    )
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=msg_admin_action(city),
+        reply_markup=_admin_action_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_back_cities(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    context.user_data.pop(KEY_ADMIN_CITY, None)
+    context.user_data.pop(KEY_ADMIN_STATE, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISES, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISE_NAME, None)
+
+    await update.callback_query.edit_message_text(
+        msg_admin_welcome(),
+        reply_markup=_admin_city_keyboard(context),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_admin_back_actions(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.callback_query.answer()
+    city = context.user_data.get(KEY_ADMIN_CITY, "")
+    context.user_data.pop(KEY_ADMIN_STATE, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISES, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISE_NAME, None)
+
+    await update.callback_query.edit_message_text(
+        msg_admin_action(city),
+        reply_markup=_admin_action_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def _admin_handle_exercise_name(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    name = update.message.text.strip()
+    city = context.user_data.get(KEY_ADMIN_CITY)
+    context.user_data.pop(KEY_ADMIN_STATE, None)
+
+    if not name or not city:
+        await update.message.reply_text(
+            msg_error("Название не может быть пустым."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    manager = get_manager(context)
+    spreadsheet_id = get_spreadsheet_id(context)
+
+    existing = await manager.get_exercises(spreadsheet_id, city=city)
+    normalized_new = name.strip().lower()
+    for ex in existing:
+        if ex.strip().lower() == normalized_new:
+            await update.message.reply_text(
+                msg_admin_action(city, result=f"Упражнение \u00ab{name}\u00bb уже существует"),
+                reply_markup=_admin_action_keyboard(),
+                parse_mode=PARSE_MODE,
+            )
+            return
+
+    try:
+        await manager.add_exercise(spreadsheet_id, name, city=city)
+    except (GoogleSheetsAPIError, AuthenticationError):
+        logger.exception("Failed to add exercise")
+        await update.message.reply_text(
+            msg_error("Не удалось добавить упражнение. Попробуйте позже."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    await update.message.reply_text(
+        "<i>Упражнение успешно добавлено</i>",
+        parse_mode=PARSE_MODE,
+    )
+    await update.message.reply_text(
+        msg_admin_action(city),
+        reply_markup=_admin_action_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def _admin_handle_rename(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    new_name = update.message.text.strip()
+    city = context.user_data.get(KEY_ADMIN_CITY)
+    old_name = context.user_data.get(KEY_ADMIN_EXERCISE_NAME)
+    context.user_data.pop(KEY_ADMIN_STATE, None)
+
+    if not new_name or not city or not old_name:
+        await update.message.reply_text(
+            msg_error("Название не может быть пустым."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    manager = get_manager(context)
+    spreadsheet_id = get_spreadsheet_id(context)
+
+    existing = await manager.get_exercises(spreadsheet_id, city=city)
+    normalized_new = new_name.strip().lower()
+    for ex in existing:
+        if ex.strip().lower() == normalized_new:
+            await update.message.reply_text(
+                msg_admin_action(city, result=f"Упражнение \u00ab{new_name}\u00bb уже существует"),
+                reply_markup=_admin_action_keyboard(),
+                parse_mode=PARSE_MODE,
+            )
+            return
+
+    try:
+        await manager.rename_exercise(spreadsheet_id, old_name, new_name, city=city)
+    except ExerciseNotFoundException:
+        await update.message.reply_text(
+            msg_error(f"Упражнение \u00ab{old_name}\u00bb не найдено в таблице."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+    except (GoogleSheetsAPIError, AuthenticationError):
+        logger.exception("Failed to rename exercise")
+        await update.message.reply_text(
+            msg_error("Не удалось переименовать упражнение. Попробуйте позже."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+
+    context.user_data.pop(KEY_ADMIN_EXERCISE_NAME, None)
+    context.user_data.pop(KEY_ADMIN_EXERCISES, None)
+
+    await update.message.reply_text(
+        "<i>Упражнение успешно переименовано</i>",
+        parse_mode=PARSE_MODE,
+    )
+    await update.message.reply_text(
+        msg_admin_action(city),
+        reply_markup=_admin_action_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+# ---------------------------------------------------------------------------
 #  Fallbacks
 # ---------------------------------------------------------------------------
 
@@ -636,6 +1266,17 @@ async def fallback_callback(
 async def fallback_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    admin_state = context.user_data.get(KEY_ADMIN_STATE)
+    if admin_state == ADMIN_AWAITING_PASSWORD:
+        await _admin_handle_password(update, context)
+        return
+    if context.user_data.get(KEY_IS_ADMIN):
+        if admin_state == ADMIN_AWAITING_NAME:
+            await _admin_handle_exercise_name(update, context)
+            return
+        if admin_state == ADMIN_AWAITING_RENAME:
+            await _admin_handle_rename(update, context)
+            return
     if context.user_data.get(KEY_CITY):
         await _reply_current_step(update, context)
         return
@@ -671,7 +1312,38 @@ def main() -> None:
         .build()
     )
 
+    application.add_handler(CommandHandler("admin", cmd_admin))
+    application.add_handler(CommandHandler("panel", cmd_panel))
     application.add_handler(CommandHandler("start", cmd_start))
+
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_city, pattern=f"^{CALLBACK_ADMIN_CITY_PREFIX}\\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_add, pattern=f"^{CALLBACK_ADMIN_ADD}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_rename, pattern=f"^{CALLBACK_ADMIN_RENAME}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_remove, pattern=f"^{CALLBACK_ADMIN_REMOVE}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_rename_exercise, pattern=f"^{CALLBACK_ADMIN_RENAME_EXERCISE_PREFIX}\\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_exercise, pattern=f"^{CALLBACK_ADMIN_EXERCISE_PREFIX}\\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_confirm_delete, pattern=f"^{CALLBACK_ADMIN_CONFIRM_DELETE}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_back_cities, pattern=f"^{CALLBACK_ADMIN_BACK_CITIES}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(callback_admin_back_actions, pattern=f"^{CALLBACK_ADMIN_BACK_ACTIONS}$")
+    )
+
     application.add_handler(
         CallbackQueryHandler(callback_city, pattern=f"^{CALLBACK_CITY_PREFIX}\\d+$")
     )
