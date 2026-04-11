@@ -37,6 +37,21 @@ class SheetsManager:
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive',
     ]
+    # Spreadsheet layout for exercises: O2:W2
+    EXERCISE_HEADER_ROW_INDEX = 1  # zero-based index for row 2
+    EXERCISE_START_COL_INDEX = 14  # zero-based index for column O
+    EXERCISE_END_COL_INDEX_EXCLUSIVE = 23  # exclusive index for column W
+    EXERCISE_START_COL_NUMBER = 15  # one-based column number for O
+
+    TEAM_START_ROW_INDEX = 2  # zero-based index for row 3
+    TEAM_END_ROW_INDEX_EXCLUSIVE = 40  # exclusive index for row 40
+    TEAM_START_ROW_NUMBER = 3  # one-based row number for row 3
+    TEAM_COL_INDEX = 1  # zero-based index for column B
+
+    WORKSHEET_TITLE = "Таблица"
+
+    CHECKED_VALUE = "зачет"
+    UNCHECKED_VALUE = "незачет"
     
     def __init__(
         self,
@@ -140,13 +155,7 @@ class SheetsManager:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
 
-            if city is not None:
-                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
-            else:
-                worksheet = await spreadsheet.get_worksheet(0) # First sheet
-            
-            # Batch read: Get teams from column A (starting row 2) and exercises from row 1 (starting column B)
-            # We'll read a reasonable range - A2:A100 for teams, B1:ZZ1 for exercises
+            worksheet = await self._get_target_worksheet(spreadsheet)
             
             # Get all values at once for efficiency
             all_values = await worksheet.get_all_values()
@@ -154,20 +163,30 @@ class SheetsManager:
             if not all_values or len(all_values) < 1:
                 raise GoogleSheetsAPIError("Spreadsheet appears to be empty")
             
-            # Extract exercise names from row 1 (index 0), starting from column B (index 1)
+            # Extract exercise names from fixed range O2:W2.
             exercise_names = []
-            if len(all_values) > 0:
-                first_row = all_values[1]
-                exercise_names = [cell for cell in first_row[13:] if cell.strip()]
+            if len(all_values) > self.EXERCISE_HEADER_ROW_INDEX:
+                header_row = all_values[self.EXERCISE_HEADER_ROW_INDEX]
+                exercise_names = [
+                    cell.strip()
+                    for cell in header_row[
+                        self.EXERCISE_START_COL_INDEX:self.EXERCISE_END_COL_INDEX_EXCLUSIVE
+                    ]
+                    if cell.strip()
+                ]
             
-            # Extract team names from column A (index 0), starting from row 2 (index 1)
+            # Extract team names from fixed range B3:B40.
             team_names = []
-            for row in all_values[2:]:
-                if row and row[1].strip():
-                    team_names.append(row[1].strip())
-                else:
-                    # Stop at first empty team name
-                    break
+            for row in all_values[
+                self.TEAM_START_ROW_INDEX:self.TEAM_END_ROW_INDEX_EXCLUSIVE
+            ]:
+                team_cell = (
+                    row[self.TEAM_COL_INDEX].strip()
+                    if len(row) > self.TEAM_COL_INDEX
+                    else ""
+                )
+                if team_cell:
+                    team_names.append(team_cell)
             
             return team_names, exercise_names
         except Exception as e:
@@ -200,8 +219,8 @@ class SheetsManager:
         
         for idx, team in enumerate(teams):
             if normalize_name(team) == normalized_search:
-                # Row index: teams start at row 2 (index 0 in teams list = row 2)
-                return idx + 2
+                # Row index: teams start at row 3.
+                return idx + self.TEAM_START_ROW_NUMBER
         
         raise TeamNotFoundException(team_name, spreadsheet_id)
     
@@ -229,8 +248,8 @@ class SheetsManager:
         
         for idx, exercise in enumerate(exercises):
             if normalize_name(exercise) == normalized_search:
-                # Column index: exercises start at column B (index 0 in exercises list = column 2)
-                return idx + 2
+                # Column index: exercises start at column O.
+                return idx + self.EXERCISE_START_COL_NUMBER
         
         raise ExerciseNotFoundException(exercise_name, spreadsheet_id)
     
@@ -260,10 +279,7 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            if city is not None:
-                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
-            else:
-                worksheet = await spreadsheet.get_worksheet(0)
+            worksheet = await self._get_target_worksheet(spreadsheet)
             
             cell = await worksheet.acell(cell_notation)
             return cell.value
@@ -302,10 +318,7 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            if city is not None:
-                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
-            else:
-                worksheet = await spreadsheet.get_worksheet(0)
+            worksheet = await self._get_target_worksheet(spreadsheet)
 
             # Get current value first
             cell = await worksheet.acell(cell_notation)
@@ -330,13 +343,13 @@ class SheetsManager:
         city: Optional[str] = None
     ) -> Any:
         """
-        Check (mark as completed) a team's exercise by setting checkbox to TRUE.
+        Check (mark as completed) a team's exercise by setting checkbox to "зачёт".
         
         This method will:
         1. Validate inputs
         2. Load structure from cache or API (only structure, not values)
         3. Find the correct cell
-        4. Update the cell with TRUE (native Google Sheets checkbox)
+        4. Update the cell with "зачёт"
         5. Return the previous value
         
         Args:
@@ -345,7 +358,7 @@ class SheetsManager:
             exercise_name: Name of the exercise (from row 1)
             
         Returns:
-            Previous value of the cell (before setting to TRUE)
+            Previous value of the cell (before setting to "зачёт")
             
         Raises:
             ValueError: If inputs are invalid
@@ -385,7 +398,13 @@ class SheetsManager:
         col = await self._find_exercise_col(exercise_names, exercise_name, spreadsheet_id)
         
         # Update the cell and return previous value
-        previous_value = await self._update_cell_value(spreadsheet_id, row, col, True, city=city)
+        previous_value = await self._update_cell_value(
+            spreadsheet_id,
+            row,
+            col,
+            self.CHECKED_VALUE,
+            city=city,
+        )
         return previous_value
     
     async def uncheck_team_exercise(
@@ -396,7 +415,7 @@ class SheetsManager:
         city: Optional[str] = None
     ) -> Any:
         """
-        Uncheck (mark as incomplete) a team's exercise by setting checkbox to FALSE.
+        Uncheck (mark as incomplete) a team's exercise by setting checkbox to "незачёт".
         
         Useful for correcting mistakes or resetting exercise status.
         
@@ -404,7 +423,7 @@ class SheetsManager:
         1. Validate inputs
         2. Load structure from cache or API (only structure, not values)
         3. Find the correct cell
-        4. Update the cell with FALSE (native Google Sheets checkbox)
+        4. Update the cell with "незачёт"
         5. Return the previous value
         
         Args:
@@ -413,7 +432,7 @@ class SheetsManager:
             exercise_name: Name of the exercise (from row 1)
             
         Returns:
-            Previous value of the cell (before setting to FALSE)
+            Previous value of the cell (before setting to "незачёт")
             
         Raises:
             ValueError: If inputs are invalid
@@ -452,8 +471,14 @@ class SheetsManager:
         row = await self._find_team_row(team_names, team_name, spreadsheet_id)
         col = await self._find_exercise_col(exercise_names, exercise_name, spreadsheet_id)
         
-        # Update the cell to FALSE and return previous value
-        previous_value = await self._update_cell_value(spreadsheet_id, row, col, False, city=city)
+        # Update the cell to "незачёт" and return previous value
+        previous_value = await self._update_cell_value(
+            spreadsheet_id,
+            row,
+            col,
+            self.UNCHECKED_VALUE,
+            city=city,
+        )
         return previous_value
     
     async def get_team_exercise_status(
@@ -573,7 +598,7 @@ class SheetsManager:
                 in the order given.
             
         Returns:
-            List of exercise names from row 1 (starting column B), possibly filtered.
+            List of exercise names from fixed header range O2:W2, possibly filtered.
             
         Raises:
             ValueError: If spreadsheet_id is invalid
@@ -628,10 +653,7 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            if city is not None:
-                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
-            else:
-                worksheet = await spreadsheet.get_worksheet(0)
+            worksheet = await self._get_target_worksheet(spreadsheet)
 
             header = await worksheet.row_values(1)
             next_col = len(header) + 1
@@ -646,7 +668,7 @@ class SheetsManager:
                 cell_range = f"{col_letter}2:{col_letter}{1 + team_count}"
                 await worksheet.update(
                     cell_range,
-                    [["FALSE"]] * team_count,
+                    [[self.UNCHECKED_VALUE]] * team_count,
                     raw=False,
                 )
 
@@ -723,10 +745,7 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            if city is not None:
-                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
-            else:
-                worksheet = await spreadsheet.get_worksheet(0)
+            worksheet = await self._get_target_worksheet(spreadsheet)
 
             header = await worksheet.row_values(1)
 
@@ -793,10 +812,7 @@ class SheetsManager:
         try:
             agc = await self._agcm.authorize()
             spreadsheet = await agc.open_by_key(spreadsheet_id)
-            if city is not None:
-                worksheet = await self._get_worksheet_by_city(spreadsheet, city)
-            else:
-                worksheet = await spreadsheet.get_worksheet(0)
+            worksheet = await self._get_target_worksheet(spreadsheet)
 
             header = await worksheet.row_values(1)
             normalized = normalize_name(exercise_name)
@@ -847,20 +863,20 @@ class SheetsManager:
         """
         return self.cache.get_cache_stats()
 
-    async def _get_worksheet_by_city(self, spreadsheet, city_name: str):
+    async def _get_target_worksheet(self, spreadsheet):
         try:
             worksheets = await spreadsheet.worksheets()
-            normalized_city = normalize_name(city_name)
+            normalized_title = normalize_name(self.WORKSHEET_TITLE)
 
             for ws in worksheets:
-                if normalize_name(ws.title) == normalized_city:
+                if normalize_name(ws.title) == normalized_title:
                     return ws
             raise GoogleSheetsAPIError(
-                f"Worksheet (city) '{city_name}' not found."
+                f"Worksheet '{self.WORKSHEET_TITLE}' not found."
             )
 
         except Exception as e:
             raise GoogleSheetsAPIError(
-                f"Failed to find worksheet for city '{city_name}': {e}",
+                f"Failed to find worksheet '{self.WORKSHEET_TITLE}': {e}",
                 original_error=e
             )

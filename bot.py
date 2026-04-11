@@ -81,6 +81,7 @@ CITIES_ENV = "CITIES"
 N_EXERCISES_ENV = "N_EXERCISES"
 EXERCISE_NAMES_ENV = "EXCLUDED_NAMES"
 DEFAULT_EXCLUDED_NAMES = ["Сдано задач", "Разница"]
+DEFAULT_CITY = "Минск"
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +357,7 @@ def _admin_confirm_delete_keyboard() -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------------------
 
 def _get_cities_from_env() -> list[str]:
-    raw = os.getenv(CITIES_ENV, "")
-    return [s.strip() for s in raw.split(",") if s.strip()]
+    return [DEFAULT_CITY]
 
 
 def _get_exercise_filter():
