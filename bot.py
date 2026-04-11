@@ -5,6 +5,8 @@ Flow: /start -> city -> action -> exercise -> team (stay on team list).
 
 import logging
 import os
+import json
+import re
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -36,11 +38,13 @@ logger = logging.getLogger(__name__)
 
 PARSE_MODE = "HTML"
 KEY_SELECTED_EXERCISE = "selected_exercise"
+KEY_SELECTED_TEAM = "selected_team"
 KEY_EXERCISES = "exercises"
 KEY_TEAMS = "teams"
 KEY_ACTION_TYPE = "action_type"
 KEY_CITY = "city"
 KEY_LAST_RESULT = "last_result"
+KEY_TEAM_SOLVED_COUNT = "team_solved_count"
 
 ACTION_CHECK = "check"
 ACTION_UNCHECK = "uncheck"
@@ -82,6 +86,7 @@ N_EXERCISES_ENV = "N_EXERCISES"
 EXERCISE_NAMES_ENV = "EXCLUDED_NAMES"
 DEFAULT_EXCLUDED_NAMES = ["Сдано задач", "Разница"]
 DEFAULT_CITY = "Минск"
+CITIES_SPREADSHEETS_FILE = "cities_spreadsheets.json"
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +95,14 @@ DEFAULT_CITY = "Минск"
 
 def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _format_user_for_log(update: Update) -> str:
+    user = update.effective_user
+    if user is None:
+        return "unknown"
+    username = f"@{user.username}" if user.username else "no_username"
+    return f"id={user.id}, username={username}, name={user.full_name}"
 
 
     # ---------------------------------------------------------------------------
@@ -136,19 +149,35 @@ def msg_exercise_select(city: str, action_type: str) -> str:
 def msg_team_select(
     city: str,
     action_type: str,
-    exercise: str,
     last_result: Optional[str] = None,
 ) -> str:
     header = (
         "<blockquote>"
         f"<b>Город:</b>  {_esc(city)}\n"
-        f"<b>Действие:</b>  {_action_label(action_type)}\n"
-        f"<b>Упражнение:</b>  {_esc(exercise)}"
+        f"<b>Действие:</b>  {_action_label(action_type)}"
         "</blockquote>"
     )
     if last_result:
         return f"{header}\n\n<i>{_esc(last_result)}</i>"
     return f"{header}\n\nВыберите команду:"
+
+
+def msg_exercise_select_for_team(
+    city: str,
+    action_type: str,
+    team_name: str,
+    solved_count: int,
+) -> str:
+    return (
+        "<blockquote>"
+        f"<b>Город:</b>  {_esc(city)}\n"
+        f"<b>Действие:</b>  {_action_label(action_type)}\n"
+        f"<b>Команда:</b>  {_esc(team_name)}\n"
+        f"<b>Решено задач:</b>  {solved_count}"
+        "</blockquote>\n"
+        "\n"
+        "Выберите упражнение:"
+    )
 
 
 def msg_error(text: str) -> str:
@@ -295,7 +324,7 @@ def _exercise_keyboard(
 ) -> InlineKeyboardMarkup:
     keyboard = _chunk_buttons(exercises, CALLBACK_EXERCISE_PREFIX, columns=1)
     keyboard.append([
-        InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_ACTIONS),
+        InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_EXERCISES),
     ])
     keyboard.append([_toggle_button(action_type)])
     return InlineKeyboardMarkup(keyboard)
@@ -306,7 +335,7 @@ def _team_keyboard(
 ) -> InlineKeyboardMarkup:
     keyboard = _chunk_buttons(teams, CALLBACK_TEAM_PREFIX, columns=1)
     keyboard.append([
-        InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_EXERCISES),
+        InlineKeyboardButton("Назад", callback_data=CALLBACK_NAV_BACK_TO_ACTIONS),
     ])
     keyboard.append([_toggle_button(action_type)])
     return InlineKeyboardMarkup(keyboard)
@@ -360,6 +389,61 @@ def _get_cities_from_env() -> list[str]:
     return [DEFAULT_CITY]
 
 
+def _extract_spreadsheet_id(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    if "/" not in text:
+        return text
+
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", text)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _load_city_spreadsheet_ids() -> dict[str, str]:
+    if not os.path.exists(CITIES_SPREADSHEETS_FILE):
+        return {}
+
+    with open(CITIES_SPREADSHEETS_FILE, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if not isinstance(raw, dict):
+        raise RuntimeError(
+            f"{CITIES_SPREADSHEETS_FILE} must be a JSON object: "
+            '{"Город": "spreadsheet_url"}'
+        )
+
+    city_to_id: dict[str, str] = {}
+    for city, spreadsheet_value in raw.items():
+        if not isinstance(city, str):
+            continue
+        if not isinstance(spreadsheet_value, str):
+            continue
+        spreadsheet_id = _extract_spreadsheet_id(spreadsheet_value)
+        if spreadsheet_id:
+            city_to_id[city.strip()] = spreadsheet_id
+
+    return city_to_id
+
+
+def _load_cities_from_json() -> list[str]:
+    if not os.path.exists(CITIES_SPREADSHEETS_FILE):
+        return []
+
+    with open(CITIES_SPREADSHEETS_FILE, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if not isinstance(raw, dict):
+        raise RuntimeError(
+            f"{CITIES_SPREADSHEETS_FILE} must be a JSON object: "
+            '{"Город": "spreadsheet_url"}'
+        )
+
+    return [city.strip() for city in raw.keys() if isinstance(city, str) and city.strip()]
+
+
 def _get_exercise_filter():
     exclude_raw = os.getenv(EXERCISE_NAMES_ENV)
     if exclude_raw and exclude_raw.strip():
@@ -377,8 +461,20 @@ def get_manager(context: ContextTypes.DEFAULT_TYPE) -> SheetsManager:
     return context.application.bot_data["sheets_manager"]
 
 
-def get_spreadsheet_id(context: ContextTypes.DEFAULT_TYPE) -> str:
-    return context.application.bot_data["spreadsheet_id"]
+def get_spreadsheet_id_for_city(
+    context: ContextTypes.DEFAULT_TYPE,
+    city: str,
+) -> str:
+    city_to_id = context.application.bot_data.get("city_spreadsheet_ids") or {}
+    spreadsheet_id = city_to_id.get(city)
+    if spreadsheet_id:
+        return spreadsheet_id
+
+    default_spreadsheet_id = context.application.bot_data.get("default_spreadsheet_id")
+    if default_spreadsheet_id and city == DEFAULT_CITY:
+        return default_spreadsheet_id
+
+    raise ValueError(f"Для города '{city}' не настроена таблица.")
 
 
 # ---------------------------------------------------------------------------
@@ -388,21 +484,35 @@ def get_spreadsheet_id(context: ContextTypes.DEFAULT_TYPE) -> str:
 async def post_init(application: Application) -> None:
     credentials_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
     spreadsheet_id = os.getenv("SPREADSHEET_ID")
-    if not credentials_file or not spreadsheet_id:
+    if not credentials_file:
         raise RuntimeError(
-            "Set GOOGLE_SERVICE_ACCOUNT_FILE and SPREADSHEET_ID in .env"
+            "Set GOOGLE_SERVICE_ACCOUNT_FILE in .env"
         )
     manager = SheetsManager(credentials_file=credentials_file)
     await manager.initialize()
+    cities_from_json = _load_cities_from_json()
+    city_spreadsheet_ids = _load_city_spreadsheet_ids()
+    cities = cities_from_json or _get_cities_from_env()
+
+    if not cities:
+        raise RuntimeError(
+            f"No cities configured. Fill {CITIES_SPREADSHEETS_FILE} or set CITIES in .env"
+        )
+
     application.bot_data["sheets_manager"] = manager
-    application.bot_data["spreadsheet_id"] = spreadsheet_id
+    application.bot_data["default_spreadsheet_id"] = spreadsheet_id
+    application.bot_data["city_spreadsheet_ids"] = city_spreadsheet_ids
     application.bot_data["exercise_filter"] = _get_exercise_filter()
-    application.bot_data["cities"] = _get_cities_from_env()
+    application.bot_data["cities"] = cities
 
     await application.bot.set_my_commands([
         BotCommand("start", "Начать работу"),
     ])
-    logger.info("Bot initialized.")
+    logger.info(
+        "Bot initialized. cities=%d mapped_spreadsheets=%d",
+        len(cities),
+        len(city_spreadsheet_ids),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +525,11 @@ def _get_current_step_content(
     city = context.user_data.get(KEY_CITY)
     action = context.user_data.get(KEY_ACTION_TYPE)
     exercises = context.user_data.get(KEY_EXERCISES)
+    selected_team = context.user_data.get(KEY_SELECTED_TEAM)
     selected_exercise = context.user_data.get(KEY_SELECTED_EXERCISE)
     teams = context.user_data.get(KEY_TEAMS)
     last_result = context.user_data.get(KEY_LAST_RESULT)
+    solved_count = context.user_data.get(KEY_TEAM_SOLVED_COUNT, 0)
 
     if not city:
         return msg_welcome(), _city_keyboard(context)
@@ -425,16 +537,16 @@ def _get_current_step_content(
     if not action:
         return msg_action_select(city), _action_keyboard()
 
-    if exercises and not selected_exercise:
+    if teams and not selected_team:
         return (
-            msg_exercise_select(city, action),
-            _exercise_keyboard(exercises, action),
+            msg_team_select(city, action, last_result),
+            _team_keyboard(teams, action),
         )
 
-    if teams and selected_exercise:
+    if exercises and selected_team and not selected_exercise:
         return (
-            msg_team_select(city, action, selected_exercise, last_result),
-            _team_keyboard(teams, action),
+            msg_exercise_select_for_team(city, action, selected_team, solved_count),
+            _exercise_keyboard(exercises, action),
         )
 
     return msg_action_select(city), _action_keyboard()
@@ -541,49 +653,59 @@ async def _start_exercise_flow(
 ) -> None:
     context.user_data[KEY_ACTION_TYPE] = action_type
     context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+    context.user_data.pop(KEY_SELECTED_TEAM, None)
+    context.user_data.pop(KEY_EXERCISES, None)
     context.user_data.pop(KEY_TEAMS, None)
+    context.user_data.pop(KEY_TEAM_SOLVED_COUNT, None)
     context.user_data.pop(KEY_LAST_RESULT, None)
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
+    city = context.user_data.get(KEY_CITY)
+
+    if not city:
+        await update.callback_query.edit_message_text(
+            msg_error("Город не выбран. Отправьте /start."),
+            parse_mode=PARSE_MODE,
+        )
+        return
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.callback_query.edit_message_text(
+            msg_error(str(e)),
+            parse_mode=PARSE_MODE,
+        )
+        return
 
     try:
-        max_count, exclude_filter = context.application.bot_data.get(
-            "exercise_filter", (None, None),
-        )
-        exercises = await manager.get_exercises(
-            spreadsheet_id,
-            max_count=max_count,
-            excluded_names=exclude_filter,
-        )
+        teams = await manager.get_teams(spreadsheet_id, city=city)
     except AuthenticationError:
-        logger.exception("Auth error loading exercises")
+        logger.exception("Auth error loading teams")
         await update.callback_query.edit_message_text(
             msg_error("Не удалось авторизоваться. Обратитесь к администратору."),
             parse_mode=PARSE_MODE,
         )
         return
     except GoogleSheetsAPIError:
-        logger.exception("API error loading exercises")
+        logger.exception("API error loading teams")
         await update.callback_query.edit_message_text(
-            msg_error("Не удалось загрузить упражнения. Попробуйте позже."),
+            msg_error("Не удалось загрузить команды. Попробуйте позже."),
             parse_mode=PARSE_MODE,
         )
         return
 
-    if not exercises:
+    if not teams:
         await update.callback_query.edit_message_text(
-            msg_error("В таблице пока нет упражнений."),
+            msg_error("В таблице пока нет команд."),
             parse_mode=PARSE_MODE,
         )
         return
 
-    context.user_data[KEY_EXERCISES] = exercises
-    city = context.user_data.get(KEY_CITY, "")
+    context.user_data[KEY_TEAMS] = teams
 
     await update.callback_query.edit_message_text(
-        msg_exercise_select(city, action_type),
-        reply_markup=_exercise_keyboard(exercises, action_type),
+        msg_team_select(city, action_type),
+        reply_markup=_team_keyboard(teams, action_type),
         parse_mode=PARSE_MODE,
     )
 
@@ -600,7 +722,8 @@ async def callback_exercise(
     except ValueError:
         return
     exercises = context.user_data.get(KEY_EXERCISES)
-    if not exercises or index < 0 or index >= len(exercises):
+    team_name = context.user_data.get(KEY_SELECTED_TEAM)
+    if not exercises or not team_name or index < 0 or index >= len(exercises):
         return
 
     exercise_name = exercises[index]
@@ -618,71 +741,13 @@ async def callback_exercise(
         return
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
-
     try:
-        teams = await manager.get_teams(spreadsheet_id, city=city)
-    except AuthenticationError:
-        logger.exception("Auth error loading teams")
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
         await update.callback_query.edit_message_text(
-            msg_error("Не удалось авторизоваться. Обратитесь к администратору."),
+            msg_error(str(e)),
             parse_mode=PARSE_MODE,
         )
-        context.user_data.pop(KEY_SELECTED_EXERCISE, None)
-        return
-    except GoogleSheetsAPIError:
-        logger.exception("API error loading teams")
-        await update.callback_query.edit_message_text(
-            msg_error("Не удалось загрузить команды. Попробуйте позже."),
-            parse_mode=PARSE_MODE,
-        )
-        context.user_data.pop(KEY_SELECTED_EXERCISE, None)
-        return
-
-    if not teams:
-        await update.callback_query.edit_message_text(
-            msg_error("В таблице пока нет команд."),
-            parse_mode=PARSE_MODE,
-        )
-        context.user_data.pop(KEY_SELECTED_EXERCISE, None)
-        return
-
-    context.user_data[KEY_TEAMS] = teams
-
-    await update.callback_query.edit_message_text(
-        msg_team_select(city, action_type, exercise_name),
-        reply_markup=_team_keyboard(teams, action_type),
-        parse_mode=PARSE_MODE,
-    )
-
-
-async def callback_team(
-    update: Update, context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    data = update.callback_query.data
-    if not data or not data.startswith(CALLBACK_TEAM_PREFIX):
-        await update.callback_query.answer()
-        return
-    try:
-        index = int(data[len(CALLBACK_TEAM_PREFIX):], 10)
-    except ValueError:
-        await update.callback_query.answer()
-        return
-
-    teams = context.user_data.get(KEY_TEAMS)
-    exercise_name = context.user_data.get(KEY_SELECTED_EXERCISE)
-    if not teams or exercise_name is None or index < 0 or index >= len(teams):
-        await update.callback_query.answer("Произошла ошибка", show_alert=True)
-        return
-
-    team_name = teams[index]
-    manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
-    action_type = context.user_data.get(KEY_ACTION_TYPE, ACTION_CHECK)
-    city = context.user_data.get(KEY_CITY)
-
-    if not city:
-        await update.callback_query.answer("Город не выбран", show_alert=True)
         return
 
     try:
@@ -727,8 +792,20 @@ async def callback_team(
         toast = f"Команде \u00ab{team_name}\u00bb зачтено"
         result_line = f"Команде \u00ab{team_name}\u00bb успешно зачтено выполнение упражнения \u00ab{exercise_name}\u00bb"
 
+    logger.info(
+        "Exercise status updated by user (%s): action=%s city=%s team=%s exercise=%s spreadsheet_id=%s",
+        _format_user_for_log(update),
+        action_type,
+        city,
+        team_name,
+        exercise_name,
+        spreadsheet_id,
+    )
+
     context.user_data.pop(KEY_LAST_RESULT, None)
     context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+    context.user_data.pop(KEY_SELECTED_TEAM, None)
+    context.user_data.pop(KEY_TEAM_SOLVED_COUNT, None)
     context.user_data.pop(KEY_TEAMS, None)
     context.user_data.pop(KEY_EXERCISES, None)
 
@@ -741,6 +818,93 @@ async def callback_team(
         chat_id=update.effective_chat.id,
         text=msg_action_select(city),
         reply_markup=_action_keyboard(),
+        parse_mode=PARSE_MODE,
+    )
+
+
+async def callback_team(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    data = update.callback_query.data
+    if not data or not data.startswith(CALLBACK_TEAM_PREFIX):
+        await update.callback_query.answer()
+        return
+    try:
+        index = int(data[len(CALLBACK_TEAM_PREFIX):], 10)
+    except ValueError:
+        await update.callback_query.answer()
+        return
+
+    teams = context.user_data.get(KEY_TEAMS)
+    if not teams or index < 0 or index >= len(teams):
+        await update.callback_query.answer("Произошла ошибка", show_alert=True)
+        return
+
+    team_name = teams[index]
+    context.user_data[KEY_SELECTED_TEAM] = team_name
+    context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+    context.user_data.pop(KEY_LAST_RESULT, None)
+
+    manager = get_manager(context)
+    action_type = context.user_data.get(KEY_ACTION_TYPE, ACTION_CHECK)
+    city = context.user_data.get(KEY_CITY)
+
+    if not city:
+        await update.callback_query.answer("Город не выбран", show_alert=True)
+        return
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.callback_query.answer(str(e), show_alert=True)
+        return
+
+    try:
+        max_count, exclude_filter = context.application.bot_data.get(
+            "exercise_filter", (None, None),
+        )
+        exercises = await manager.get_exercises(
+            spreadsheet_id,
+            max_count=max_count,
+            excluded_names=exclude_filter,
+            city=city,
+        )
+        solved_count = await manager.get_team_solved_count(
+            spreadsheet_id=spreadsheet_id,
+            team_name=team_name,
+            city=city,
+        )
+    except AuthenticationError:
+        logger.exception("Auth error loading exercises")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось авторизоваться. Обратитесь к администратору."),
+            parse_mode=PARSE_MODE,
+        )
+        context.user_data.pop(KEY_SELECTED_TEAM, None)
+        return
+    except GoogleSheetsAPIError:
+        logger.exception("API error loading exercises")
+        await update.callback_query.edit_message_text(
+            msg_error("Не удалось загрузить упражнения. Попробуйте позже."),
+            parse_mode=PARSE_MODE,
+        )
+        context.user_data.pop(KEY_SELECTED_TEAM, None)
+        return
+
+    if not exercises:
+        await update.callback_query.edit_message_text(
+            msg_error("В таблице пока нет упражнений."),
+            parse_mode=PARSE_MODE,
+        )
+        context.user_data.pop(KEY_SELECTED_TEAM, None)
+        return
+
+    context.user_data[KEY_EXERCISES] = exercises
+    context.user_data[KEY_TEAM_SOLVED_COUNT] = solved_count
+
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        msg_exercise_select_for_team(city, action_type, team_name, solved_count),
+        reply_markup=_exercise_keyboard(exercises, action_type),
         parse_mode=PARSE_MODE,
     )
 
@@ -763,8 +927,10 @@ async def callback_nav_back_to_exercises(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     await update.callback_query.answer()
-    context.user_data.pop(KEY_TEAMS, None)
     context.user_data.pop(KEY_SELECTED_EXERCISE, None)
+    context.user_data.pop(KEY_SELECTED_TEAM, None)
+    context.user_data.pop(KEY_EXERCISES, None)
+    context.user_data.pop(KEY_TEAM_SOLVED_COUNT, None)
     context.user_data.pop(KEY_LAST_RESULT, None)
     await _render_current_step(update, context)
 
@@ -773,7 +939,8 @@ async def callback_nav_back_to_actions(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     await update.callback_query.answer()
-    for key in (KEY_SELECTED_EXERCISE, KEY_EXERCISES, KEY_TEAMS,
+    for key in (KEY_SELECTED_EXERCISE, KEY_SELECTED_TEAM, KEY_EXERCISES, KEY_TEAMS,
+                KEY_TEAM_SOLVED_COUNT,
                 KEY_ACTION_TYPE, KEY_LAST_RESULT):
         context.user_data.pop(key, None)
     await _render_current_step(update, context)
@@ -944,7 +1111,14 @@ async def callback_admin_remove(
         return
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.callback_query.edit_message_text(
+            msg_error(str(e)),
+            parse_mode=PARSE_MODE,
+        )
+        return
 
     try:
         exercises = await manager.get_exercises(spreadsheet_id, city=city)
@@ -981,7 +1155,14 @@ async def callback_admin_rename(
         return
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.callback_query.edit_message_text(
+            msg_error(str(e)),
+            parse_mode=PARSE_MODE,
+        )
+        return
 
     try:
         exercises = await manager.get_exercises(spreadsheet_id, city=city)
@@ -1079,7 +1260,11 @@ async def callback_admin_confirm_delete(
         return
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.callback_query.answer(str(e), show_alert=True)
+        return
 
     try:
         await manager.remove_exercise(spreadsheet_id, exercise_name, city=city)
@@ -1159,7 +1344,14 @@ async def _admin_handle_exercise_name(
         return
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.message.reply_text(
+            msg_error(str(e)),
+            parse_mode=PARSE_MODE,
+        )
+        return
 
     existing = await manager.get_exercises(spreadsheet_id, city=city)
     normalized_new = name.strip().lower()
@@ -1209,7 +1401,14 @@ async def _admin_handle_rename(
         return
 
     manager = get_manager(context)
-    spreadsheet_id = get_spreadsheet_id(context)
+    try:
+        spreadsheet_id = get_spreadsheet_id_for_city(context, city)
+    except ValueError as e:
+        await update.message.reply_text(
+            msg_error(str(e)),
+            parse_mode=PARSE_MODE,
+        )
+        return
 
     existing = await manager.get_exercises(spreadsheet_id, city=city)
     normalized_new = new_name.strip().lower()

@@ -37,11 +37,15 @@ class SheetsManager:
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive',
     ]
-    # Spreadsheet layout for exercises: O2:W2
+    # Physical exercises layout: O2:W2
     EXERCISE_HEADER_ROW_INDEX = 1  # zero-based index for row 2
     EXERCISE_START_COL_INDEX = 14  # zero-based index for column O
     EXERCISE_END_COL_INDEX_EXCLUSIVE = 23  # exclusive index for column W
     EXERCISE_START_COL_NUMBER = 15  # one-based column number for O
+
+    # Algo tasks layout: C:L
+    TASKS_START_COL_NUMBER = 3  # one-based column number for C
+    TASKS_END_COL_NUMBER = 12  # one-based column number for L
 
     TEAM_START_ROW_INDEX = 2  # zero-based index for row 3
     TEAM_END_ROW_INDEX_EXCLUSIVE = 40  # exclusive index for row 40
@@ -163,7 +167,7 @@ class SheetsManager:
             if not all_values or len(all_values) < 1:
                 raise GoogleSheetsAPIError("Spreadsheet appears to be empty")
             
-            # Extract exercise names from fixed range O2:W2.
+            # Extract physical exercise names from fixed range O2:W2.
             exercise_names = []
             if len(all_values) > self.EXERCISE_HEADER_ROW_INDEX:
                 header_row = all_values[self.EXERCISE_HEADER_ROW_INDEX]
@@ -248,7 +252,7 @@ class SheetsManager:
         
         for idx, exercise in enumerate(exercises):
             if normalize_name(exercise) == normalized_search:
-                # Column index: exercises start at column O.
+                # Column index: physical exercises start at column O.
                 return idx + self.EXERCISE_START_COL_NUMBER
         
         raise ExerciseNotFoundException(exercise_name, spreadsheet_id)
@@ -537,6 +541,56 @@ class SheetsManager:
         
         # Get cell value
         return await self._get_cell_value(spreadsheet_id, row, col, city=city)
+
+    async def get_team_solved_count(
+        self,
+        spreadsheet_id: str,
+        team_name: str,
+        city: Optional[str] = None,
+    ) -> int:
+        """
+        Count solved tasks for a team as number of non-empty exercise cells.
+
+        The count is calculated in the algo tasks range C:L for the team's row.
+        """
+        validate_spreadsheet_id(spreadsheet_id)
+        validate_team_name(team_name)
+        self._ensure_initialized()
+
+        cache_key = f"{spreadsheet_id}:{city or 'default'}"
+
+        async def fetch_structure():
+            return await self._load_structure(spreadsheet_id, city=city)
+
+        team_names, _ = await self.cache.get_or_fetch(
+            cache_key,
+            fetch_structure,
+        )
+        row = await self._find_team_row(team_names, team_name, spreadsheet_id)
+
+        try:
+            agc = await self._agcm.authorize()
+            spreadsheet = await agc.open_by_key(spreadsheet_id)
+            worksheet = await self._get_target_worksheet(spreadsheet)
+
+            start_col_letter = column_number_to_letter(self.TASKS_START_COL_NUMBER)
+            end_col_letter = column_number_to_letter(self.TASKS_END_COL_NUMBER)
+            range_notation = f"{start_col_letter}{row}:{end_col_letter}{row}"
+
+            row_values = await worksheet.get(range_notation)
+            if not row_values:
+                return 0
+
+            return sum(
+                1
+                for cell in row_values[0]
+                if str(cell).strip()
+            )
+        except Exception as e:
+            raise GoogleSheetsAPIError(
+                f"Failed to count solved tasks for team '{team_name}': {str(e)}",
+                original_error=e,
+            )
     
     async def get_teams(self, spreadsheet_id: str, city: Optional[str] = None) -> List[str]:
         """
@@ -598,7 +652,7 @@ class SheetsManager:
                 in the order given.
             
         Returns:
-            List of exercise names from fixed header range O2:W2, possibly filtered.
+            List of physical exercise names from fixed header range O2:W2, possibly filtered.
             
         Raises:
             ValueError: If spreadsheet_id is invalid
