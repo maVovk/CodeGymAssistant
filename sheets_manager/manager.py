@@ -157,14 +157,14 @@ class SheetsManager:
             # Extract exercise names from row 1 (index 0), starting from column B (index 1)
             exercise_names = []
             if len(all_values) > 0:
-                first_row = all_values[0]
-                exercise_names = [cell for cell in first_row[1:] if cell.strip()]
+                first_row = all_values[1]
+                exercise_names = [cell for cell in first_row[13:] if cell.strip()]
             
             # Extract team names from column A (index 0), starting from row 2 (index 1)
             team_names = []
-            for row in all_values[1:]:
-                if row and row[0].strip():
-                    team_names.append(row[0].strip())
+            for row in all_values[2:]:
+                if row and row[1].strip():
+                    team_names.append(row[1].strip())
                 else:
                     # Stop at first empty team name
                     break
